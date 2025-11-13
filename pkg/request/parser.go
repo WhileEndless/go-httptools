@@ -68,7 +68,46 @@ func Parse(data []byte) (*Request, error) {
 	}
 	req.Body = bodyBytes
 
+	// Auto-parse Transfer-Encoding header
+	req.parseTransferEncoding()
+
+	// Auto-parse query parameters from URL
+	req.ParseQueryParams()
+
+	// Auto-parse cookies from Cookie header
+	req.ParseCookies()
+
 	return req, nil
+}
+
+// parseTransferEncoding parses Transfer-Encoding header
+func (r *Request) parseTransferEncoding() {
+	teHeader := r.Headers.Get("Transfer-Encoding")
+	if teHeader == "" {
+		r.TransferEncoding = []string{}
+		return
+	}
+
+	// Split by comma
+	parts := strings.Split(teHeader, ",")
+	encodings := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		encoding := strings.TrimSpace(part)
+		if encoding != "" {
+			encodings = append(encodings, encoding)
+		}
+	}
+
+	r.TransferEncoding = encodings
+
+	// Check if body is chunked
+	for _, enc := range encodings {
+		if strings.ToLower(enc) == "chunked" {
+			r.IsBodyChunked = true
+			break
+		}
+	}
 }
 
 // parseRequestLine parses the HTTP request line with fault tolerance

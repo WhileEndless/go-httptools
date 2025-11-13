@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/WhileEndless/go-httptools/pkg/compression"
+	"github.com/WhileEndless/go-httptools/pkg/cookies"
 	"github.com/WhileEndless/go-httptools/pkg/errors"
 	"github.com/WhileEndless/go-httptools/pkg/headers"
 )
@@ -35,13 +36,26 @@ func Parse(data []byte) (*Response, error) {
 		return nil, err
 	}
 
-	// Parse headers
+	// Parse headers - handle Set-Cookie separately for multi-value support
 	headerData := &bytes.Buffer{}
+	setCookieHeaders := []string{}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if len(strings.TrimSpace(line)) == 0 {
 			break // End of headers
 		}
+
+		// Check if this is a Set-Cookie header
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "set-cookie:") {
+			// Extract value
+			colonPos := strings.Index(line, ":")
+			if colonPos != -1 {
+				value := strings.TrimSpace(line[colonPos+1:])
+				setCookieHeaders = append(setCookieHeaders, value)
+			}
+		}
+
 		headerData.WriteString(line)
 		headerData.WriteString("\r\n")
 	}
@@ -54,6 +68,12 @@ func Parse(data []byte) (*Response, error) {
 		} else {
 			resp.Headers = parsedHeaders
 		}
+	}
+
+	// Parse Set-Cookie headers collected separately
+	for _, setCookieValue := range setCookieHeaders {
+		cookie := cookies.ParseSetCookie(setCookieValue)
+		resp.SetCookies = append(resp.SetCookies, cookie)
 	}
 
 	// Read body (everything after headers)
@@ -95,7 +115,42 @@ func Parse(data []byte) (*Response, error) {
 		resp.Compressed = false
 	}
 
+	// Auto-parse Transfer-Encoding header
+	resp.parseTransferEncoding()
+
+	// Set-Cookie headers already parsed above during header parsing
+
 	return resp, nil
+}
+
+// parseTransferEncoding parses Transfer-Encoding header
+func (r *Response) parseTransferEncoding() {
+	teHeader := r.Headers.Get("Transfer-Encoding")
+	if teHeader == "" {
+		r.TransferEncoding = []string{}
+		return
+	}
+
+	// Split by comma
+	parts := strings.Split(teHeader, ",")
+	encodings := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		encoding := strings.TrimSpace(part)
+		if encoding != "" {
+			encodings = append(encodings, encoding)
+		}
+	}
+
+	r.TransferEncoding = encodings
+
+	// Check if body is chunked
+	for _, enc := range encodings {
+		if strings.ToLower(enc) == "chunked" {
+			r.IsBodyChunked = true
+			break
+		}
+	}
 }
 
 // parseStatusLine parses the HTTP status line with fault tolerance
