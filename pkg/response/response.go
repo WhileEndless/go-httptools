@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/WhileEndless/go-httptools/pkg/chunked"
 	"github.com/WhileEndless/go-httptools/pkg/compression"
+	"github.com/WhileEndless/go-httptools/pkg/cookies"
 	"github.com/WhileEndless/go-httptools/pkg/headers"
 )
 
@@ -15,15 +17,24 @@ type Response struct {
 	StatusText string                  // Status text (OK, Not Found, etc.)
 	Headers    *headers.OrderedHeaders // Headers with preserved order
 	Body       []byte                  // Decompressed response body
-	RawBody    []byte                  // Original compressed body (if any)
+	RawBody    []byte                  // Original compressed/chunked body (if any)
 	Raw        []byte                  // Original raw response data
 	Compressed bool                    // Whether original body was compressed
+
+	// Transfer encoding
+	TransferEncoding []string // Parsed from Transfer-Encoding header
+	IsBodyChunked    bool     // Whether body is chunked encoded
+
+	// Set-Cookie headers
+	SetCookies []cookies.ResponseCookie // Parsed from Set-Cookie headers
 }
 
 // NewResponse creates a new Response instance
 func NewResponse() *Response {
 	return &Response{
-		Headers: headers.NewOrderedHeaders(),
+		Headers:          headers.NewOrderedHeaders(),
+		TransferEncoding: []string{},
+		SetCookies:       []cookies.ResponseCookie{},
 	}
 }
 
@@ -34,6 +45,7 @@ func (r *Response) Clone() *Response {
 	clone.StatusCode = r.StatusCode
 	clone.StatusText = r.StatusText
 	clone.Compressed = r.Compressed
+	clone.IsBodyChunked = r.IsBodyChunked
 
 	clone.Body = make([]byte, len(r.Body))
 	copy(clone.Body, r.Body)
@@ -48,6 +60,14 @@ func (r *Response) Clone() *Response {
 	for _, header := range r.Headers.All() {
 		clone.Headers.Set(header.Name, header.Value)
 	}
+
+	// Clone transfer encoding
+	clone.TransferEncoding = make([]string, len(r.TransferEncoding))
+	copy(clone.TransferEncoding, r.TransferEncoding)
+
+	// Clone set-cookies
+	clone.SetCookies = make([]cookies.ResponseCookie, len(r.SetCookies))
+	copy(clone.SetCookies, r.SetCookies)
 
 	return clone
 }
@@ -141,4 +161,117 @@ func (r *Response) GetRedirectLocation() string {
 		return r.Headers.Get("Location")
 	}
 	return ""
+}
+
+// ============================================================================
+// Chunked Transfer Encoding
+// ============================================================================
+
+// DecodeChunkedBody decodes the body if it's chunked encoded
+// Returns trailers found after final chunk
+// Updates Body field with decoded data and sets IsBodyChunked to false
+func (r *Response) DecodeChunkedBody() map[string]string {
+	if !r.IsBodyChunked {
+		// Body is not chunked, nothing to do
+		return nil
+	}
+
+	// Decode using chunked package
+	decodedBody, trailers := chunked.Decode(r.Body)
+
+	// Store original chunked body in RawBody if not already stored
+	if len(r.RawBody) == 0 || r.IsBodyChunked {
+		r.RawBody = make([]byte, len(r.Body))
+		copy(r.RawBody, r.Body)
+	}
+
+	// Update body with decoded version
+	r.Body = decodedBody
+	r.IsBodyChunked = false
+
+	// Update Content-Length header (remove it, as chunked doesn't use it)
+	r.Headers.Del("Content-Length")
+
+	return trailers
+}
+
+// EncodeChunkedBody encodes the body with chunked transfer encoding
+// chunkSize specifies the size of each chunk (0 = default 8192)
+func (r *Response) EncodeChunkedBody(chunkSize int) {
+	if r.IsBodyChunked {
+		// Already chunked, nothing to do
+		return
+	}
+
+	// Store original body if not already stored
+	if len(r.RawBody) == 0 {
+		r.RawBody = make([]byte, len(r.Body))
+		copy(r.RawBody, r.Body)
+	}
+
+	// Encode body
+	r.Body = chunked.Encode(r.Body, chunkSize)
+	r.IsBodyChunked = true
+
+	// Update headers
+	r.Headers.Set("Transfer-Encoding", "chunked")
+	r.Headers.Del("Content-Length")
+}
+
+// ============================================================================
+// Set-Cookie Support
+// ============================================================================
+
+// ParseSetCookies extracts Set-Cookie headers
+// Updates SetCookies field
+func (r *Response) ParseSetCookies() {
+	// Get all Set-Cookie headers (there can be multiple)
+	allHeaders := r.Headers.All()
+	r.SetCookies = []cookies.ResponseCookie{}
+
+	for _, header := range allHeaders {
+		if header.Name == "Set-Cookie" {
+			cookie := cookies.ParseSetCookie(header.Value)
+			r.SetCookies = append(r.SetCookies, cookie)
+		}
+	}
+}
+
+// GetSetCookie returns Set-Cookie by name
+func (r *Response) GetSetCookie(name string) *cookies.ResponseCookie {
+	for i := range r.SetCookies {
+		if r.SetCookies[i].Name == name {
+			return &r.SetCookies[i]
+		}
+	}
+	return nil
+}
+
+// AddSetCookie adds Set-Cookie header
+func (r *Response) AddSetCookie(cookie cookies.ResponseCookie) {
+	r.SetCookies = append(r.SetCookies, cookie)
+}
+
+// DeleteSetCookie removes Set-Cookie by name
+func (r *Response) DeleteSetCookie(name string) {
+	filtered := make([]cookies.ResponseCookie, 0, len(r.SetCookies))
+	for _, cookie := range r.SetCookies {
+		if cookie.Name != name {
+			filtered = append(filtered, cookie)
+		}
+	}
+	r.SetCookies = filtered
+}
+
+// UpdateSetCookieHeaders rebuilds Set-Cookie headers from SetCookies slice
+// This must be called after modifying Set-Cookie values
+func (r *Response) UpdateSetCookieHeaders() {
+	// Remove all existing Set-Cookie headers
+	r.Headers.DelAll("Set-Cookie")
+
+	// Add new Set-Cookie headers
+	for _, cookie := range r.SetCookies {
+		setCookieValue := cookie.Build()
+		r.Headers.Add("Set-Cookie", setCookieValue)
+	}
 }

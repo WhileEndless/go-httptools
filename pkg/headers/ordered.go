@@ -13,6 +13,12 @@ type OrderedHeaders struct {
 	raw    map[string]string // Preserves original case of keys
 }
 
+// HeaderEntry represents a single header name-value pair
+type HeaderEntry struct {
+	Name  string
+	Value string
+}
+
 // NewOrderedHeaders creates a new OrderedHeaders instance
 func NewOrderedHeaders() *OrderedHeaders {
 	return &OrderedHeaders{
@@ -148,7 +154,7 @@ func (h *OrderedHeaders) Has(name string) bool {
 	return exists
 }
 
-// Del removes a header
+// Del removes first occurrence of a header
 func (h *OrderedHeaders) Del(name string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -167,6 +173,42 @@ func (h *OrderedHeaders) Del(name string) {
 			}
 		}
 	}
+}
+
+// DelAll removes all occurrences of a header
+func (h *OrderedHeaders) DelAll(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	lowerName := strings.ToLower(name)
+
+	// Remove from maps
+	delete(h.values, lowerName)
+	delete(h.raw, lowerName)
+
+	// Remove all occurrences from order
+	newOrder := make([]string, 0, len(h.order))
+	for _, headerName := range h.order {
+		if headerName != lowerName {
+			newOrder = append(newOrder, headerName)
+		}
+	}
+	h.order = newOrder
+}
+
+// Add adds a new header without replacing existing ones (for multi-value headers like Set-Cookie)
+// Note: Since the internal storage uses a map, this works by appending to order but may override value
+// For true multi-value support, consider using multiple Set() calls with unique keys
+func (h *OrderedHeaders) Add(name, value string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	lowerName := strings.ToLower(name)
+
+	// Always add to order (allows duplicates for headers like Set-Cookie)
+	h.order = append(h.order, lowerName)
+	h.values[lowerName] = value
+	h.raw[lowerName] = name
 }
 
 // All returns all headers in their original order
