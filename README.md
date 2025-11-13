@@ -3,17 +3,27 @@
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/WhileEndless/go-httptools)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org/)
 
-A robust HTTP request/response parser and editor for Go. Parse raw HTTP messages with fault tolerance, preserve exact formatting, and edit messages like Burp Suite.
+A comprehensive HTTP toolkit for Go, featuring fault-tolerant parsing, raw socket communication, and message editing capabilities. Build HTTP proxies, security testing tools, and network utilities with ease.
 
 ## Features
 
+### HTTP Parsing & Editing
 - **🔧 Fault-tolerant parsing** of raw HTTP requests and responses
-- **📋 Header order preservation** for exact reconstruction  
+- **📋 Header order preservation** for exact reconstruction
 - **🎯 Non-standard header support** (`test:deneme`, malformed headers)
 - **🗜️ Automatic decompression** (gzip, deflate, brotli)
 - **✏️ Parse → Edit → Rebuild** pipeline
 - **📐 Exact format preservation** (spacing, line endings, formatting)
-- **⚡ Zero external dependencies** (except brotli for compression)
+
+### Raw Socket Communication (NEW)
+- **🚀 Raw TCP socket** - Send/receive raw HTTP over TCP/TLS
+- **🔒 Full TLS support** - HTTPS with custom certificates and skip verify
+- **🔄 Connection pooling** - Keep-Alive and connection reuse
+- **⏱️ Detailed timing** - DNS, TCP, TLS, TTFB metrics
+- **🔀 Proxy support** - Chain through upstream HTTP/SOCKS proxies
+- **🎯 Protocol negotiation** - HTTP/1.1, HTTP/2, H2C support
+- **📊 Connection metadata** - Track actual IPs, ports, protocols
+- **⚡ Minimal dependencies** - Only standard library + http2
 
 ## Quick Start
 
@@ -181,7 +191,194 @@ modified := editor.
 rebuilt := modified.Build()
 ```
 
+## Raw Socket Communication
+
+**NEW: `rawhttp` package** - Send raw HTTP requests over TCP/TLS sockets with full control.
+
+### Quick Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/WhileEndless/go-httptools/pkg/rawhttp"
+)
+
+func main() {
+    sender := rawhttp.NewSender()
+    defer sender.Close()
+
+    rawRequest := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+
+    opts := rawhttp.Options{
+        Scheme: "https",
+        Host:   "example.com",
+        Port:   443,
+        ReuseConnection: true, // Enable connection pooling
+        InsecureSkipVerify: false,
+    }
+
+    resp, err := sender.Do(context.Background(), rawRequest, opts)
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Printf("Status: %d\n", resp.StatusCode)
+    fmt.Printf("Raw Response:\n%s\n", resp.Raw)
+    fmt.Printf("Connected to: %s:%d\n", resp.ConnectedIP, resp.ConnectedPort)
+    fmt.Printf("Protocol: %s\n", resp.Protocol)
+    fmt.Printf("Timing: %s\n", resp.Timing)
+}
+```
+
+### Key Features
+
+#### 1. **Raw Response Preservation**
+The complete response (status + headers + body) is preserved exactly as received from the TCP socket:
+
+```go
+resp, _ := sender.Do(ctx, rawRequest, opts)
+fmt.Println(string(resp.Raw)) // Exact bytes from TCP socket
+```
+
+#### 2. **Connection Pooling**
+Automatic Keep-Alive and connection reuse for better performance:
+
+```go
+opts := rawhttp.Options{
+    Scheme: "https",
+    Host:   "example.com",
+    ReuseConnection: true, // Enable pooling
+}
+
+// Multiple requests reuse the same TCP connection
+for i := 0; i < 10; i++ {
+    resp, _ := sender.Do(ctx, rawRequest, opts)
+}
+```
+
+#### 3. **Upstream Proxy Support**
+Chain through HTTP or SOCKS proxies:
+
+```go
+opts := rawhttp.Options{
+    Scheme:   "https",
+    Host:     "example.com",
+    ProxyURL: "http://proxy.example.com:8080",
+}
+```
+
+#### 4. **TLS Configuration**
+Full TLS control with custom certificates and verification options:
+
+```go
+opts := rawhttp.Options{
+    Scheme:             "https",
+    Host:               "self-signed.example.com",
+    InsecureSkipVerify: true, // Skip certificate verification
+    CustomCACerts:      [][]byte{pemCert}, // Custom CA certs
+    DisableSNI:         false,
+}
+```
+
+#### 5. **Connection Metadata**
+Track actual connection details:
+
+```go
+resp, _ := sender.Do(ctx, rawRequest, opts)
+fmt.Printf("Connected IP: %s\n", resp.ConnectedIP)
+fmt.Printf("Connected Port: %d\n", resp.ConnectedPort)
+fmt.Printf("Protocol: %s\n", resp.Protocol) // "HTTP/1.1" or "HTTP/2"
+```
+
+#### 6. **Detailed Timing Metrics**
+Measure every phase of the request:
+
+```go
+resp, _ := sender.Do(ctx, rawRequest, opts)
+fmt.Printf("DNS Lookup: %v\n", resp.Timing.DNSLookup)
+fmt.Printf("TCP Connect: %v\n", resp.Timing.TCPConnect)
+fmt.Printf("TLS Handshake: %v\n", resp.Timing.TLSHandshake)
+fmt.Printf("Time to First Byte: %v\n", resp.Timing.TTFB)
+fmt.Printf("Total: %v\n", resp.Timing.Total)
+```
+
+#### 7. **Protocol Negotiation**
+HTTP/1.1, HTTP/2, and H2C support:
+
+```go
+opts := rawhttp.Options{
+    ForceHTTP1: false, // Allow HTTP/2 via ALPN
+    ForceHTTP2: false, // Don't force HTTP/2
+    EnableH2C:  false, // HTTP/2 cleartext for non-TLS
+}
+```
+
+#### 8. **Error Categorization**
+Detailed error types for better handling:
+
+```go
+resp, err := sender.Do(ctx, rawRequest, opts)
+if err != nil {
+    if httpErr, ok := err.(*rawhttp.HTTPError); ok {
+        switch httpErr.Type {
+        case rawhttp.ErrorTypeDNS:
+            fmt.Println("DNS resolution failed")
+        case rawhttp.ErrorTypeConnection:
+            fmt.Println("Connection failed")
+        case rawhttp.ErrorTypeTLS:
+            fmt.Println("TLS handshake failed")
+        case rawhttp.ErrorTypeTimeout:
+            fmt.Println("Request timeout")
+        }
+    }
+}
+```
+
+### Configuration Options
+
+```go
+type Options struct {
+    // Connection
+    Scheme string // "http" or "https"
+    Host   string
+    Port   int    // Default: 80 (HTTP), 443 (HTTPS)
+    ConnIP string // Optional: specific IP to connect to
+
+    // Timeouts
+    ConnTimeout  time.Duration // Default: 30s
+    ReadTimeout  time.Duration // Default: 30s
+    WriteTimeout time.Duration // Default: 30s
+
+    // TLS
+    DisableSNI         bool
+    InsecureSkipVerify bool
+    CustomCACerts      [][]byte // PEM format
+
+    // Performance
+    BodyMemLimit    int64 // Default: 4MB
+    ReuseConnection bool  // Default: true
+
+    // Proxy
+    ProxyURL string // e.g., "http://proxy:8080"
+
+    // Protocol
+    ForceHTTP1 bool
+    ForceHTTP2 bool
+    EnableH2C  bool // HTTP/2 cleartext
+}
+```
+
 ## API Overview
+
+### RawHTTP Package (NEW)
+- `rawhttp.NewSender()` - Create a new sender with connection pooling
+- `sender.Do(ctx, rawRequest, opts)` - Send raw HTTP request
+- `sender.Close()` - Close all pooled connections
+- **Response fields**: `Raw`, `StatusCode`, `Headers`, `Body`, `ConnectedIP`, `Protocol`, `Timing`
+- **Error types**: `ErrorTypeDNS`, `ErrorTypeConnection`, `ErrorTypeTLS`, `ErrorTypeTimeout`
 
 ### Request Package
 - `request.Parse([]byte)` - Standard parsing with normalization
@@ -189,7 +386,7 @@ rebuilt := modified.Build()
 - `req.Build()` - Standard rebuild
 - `rawReq.BuildRaw()` - Exact format rebuild
 
-### Response Package  
+### Response Package
 - `response.Parse([]byte)` - Parse with automatic decompression
 - `resp.Build()` - Rebuild (compressed if original was compressed)
 - `resp.BuildDecompressed()` - Rebuild with decompressed body
@@ -215,6 +412,7 @@ See `examples/` directory for:
 - `exact_preservation.go` - Format preservation demo
 - `header_positioning.go` - Header positioning examples
 - `burp_like_usage.go` - Burp Suite-like header management
+- `test_rawhttp_features.go` - **NEW** Comprehensive rawhttp feature demonstration
 
 ## Testing
 
@@ -264,8 +462,9 @@ Current version: **1.0.0**
 
 ## Dependencies
 
-- **Go 1.21+** 
-- **github.com/andybalholm/brotli** (for Brotli compression support only)
+- **Go 1.21+**
+- **github.com/andybalholm/brotli** - Brotli compression support
+- **golang.org/x/net/http2** - HTTP/2 protocol support
 
-Zero other external dependencies - uses only Go standard library.
+Minimal external dependencies - core functionality uses only Go standard library.
 
