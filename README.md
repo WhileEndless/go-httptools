@@ -1,6 +1,6 @@
 # HTTPTools
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/WhileEndless/go-httptools)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/WhileEndless/go-httptools)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org/)
 
 A robust HTTP request/response parser and editor for Go. Parse raw HTTP messages with fault tolerance, preserve exact formatting, and edit messages like Burp Suite.
@@ -8,9 +8,10 @@ A robust HTTP request/response parser and editor for Go. Parse raw HTTP messages
 ## Features
 
 - **🔧 Fault-tolerant parsing** of raw HTTP requests and responses
-- **📋 Header order preservation** for exact reconstruction  
+- **📋 Header order preservation** for exact reconstruction
 - **🎯 Non-standard header support** (`test:deneme`, malformed headers)
 - **🗜️ Automatic decompression** (gzip, deflate, brotli)
+- **🔓 Automatic chunked encoding decoding** (opt-in, NEW in v1.1.0)
 - **✏️ Parse → Edit → Rebuild** pipeline
 - **📐 Exact format preservation** (spacing, line endings, formatting)
 - **⚡ Zero external dependencies** (except brotli for compression)
@@ -189,10 +190,36 @@ rebuilt := modified.Build()
 - `req.Build()` - Standard rebuild
 - `rawReq.BuildRaw()` - Exact format rebuild
 
-### Response Package  
+### Response Package
 - `response.Parse([]byte)` - Parse with automatic decompression
+- `response.ParseWithOptions([]byte, ParseOptions)` - Parse with custom options (NEW in v1.1.0)
 - `resp.Build()` - Rebuild (compressed if original was compressed)
 - `resp.BuildDecompressed()` - Rebuild with decompressed body
+
+#### Chunked Transfer Encoding (NEW in v1.1.0)
+
+```go
+// Default behavior: chunked body is preserved
+resp, _ := response.Parse(chunkedResponse)
+fmt.Println(resp.IsBodyChunked) // true
+
+// Auto-decode chunked encoding
+opts := response.ParseOptions{
+    AutoDecodeChunked: true,
+}
+resp, _ := response.ParseWithOptions(chunkedResponse, opts)
+fmt.Println(resp.IsBodyChunked)        // false (decoded)
+fmt.Println(string(resp.Body))         // decoded, clean content
+fmt.Println(string(resp.RawBody))      // original chunked data
+
+// Preserve trailers from chunked encoding as headers
+opts := response.ParseOptions{
+    AutoDecodeChunked:       true,
+    PreserveChunkedTrailers: true,
+}
+resp, _ := response.ParseWithOptions(chunkedResponse, opts)
+// Trailers are now accessible via resp.Headers
+```
 
 ### Headers Package
 - `headers.OrderedHeaders` - Standard headers with order preservation
@@ -215,6 +242,7 @@ See `examples/` directory for:
 - `exact_preservation.go` - Format preservation demo
 - `header_positioning.go` - Header positioning examples
 - `burp_like_usage.go` - Burp Suite-like header management
+- `auto_decode_chunked.go` - Automatic chunked encoding decoding (NEW in v1.1.0)
 
 ## Testing
 
@@ -247,11 +275,11 @@ import (
 )
 
 func main() {
-    fmt.Println("HTTPTools version:", version.GetVersion()) // Output: 1.0.0
+    fmt.Println("HTTPTools version:", version.GetVersion()) // Output: 1.1.0
 }
 ```
 
-Current version: **1.0.0**
+Current version: **1.1.0**
 
 ## Use Cases
 

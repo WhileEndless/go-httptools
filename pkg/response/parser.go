@@ -6,14 +6,33 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/WhileEndless/go-httptools/pkg/chunked"
 	"github.com/WhileEndless/go-httptools/pkg/compression"
 	"github.com/WhileEndless/go-httptools/pkg/cookies"
 	"github.com/WhileEndless/go-httptools/pkg/errors"
 	"github.com/WhileEndless/go-httptools/pkg/headers"
 )
 
+// ParseOptions contains options for parsing HTTP responses
+type ParseOptions struct {
+	// AutoDecodeChunked automatically decodes chunked transfer encoding
+	// When true, the Body field will contain the decoded content
+	// When false (default), chunked bodies remain encoded and IsBodyChunked=true
+	AutoDecodeChunked bool
+
+	// PreserveChunkedTrailers stores trailers from chunked encoding as headers
+	// Only effective when AutoDecodeChunked is true
+	PreserveChunkedTrailers bool
+}
+
 // Parse parses raw HTTP response data with fault tolerance and automatic decompression
+// Uses default options (no automatic chunked decoding)
 func Parse(data []byte) (*Response, error) {
+	return ParseWithOptions(data, ParseOptions{})
+}
+
+// ParseWithOptions parses raw HTTP response data with custom options
+func ParseWithOptions(data []byte, opts ParseOptions) (*Response, error) {
 	if len(data) == 0 {
 		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
 			"empty response data", "parse", data)
@@ -23,8 +42,18 @@ func Parse(data []byte) (*Response, error) {
 	resp.Raw = make([]byte, len(data))
 	copy(resp.Raw, data)
 
-	// Split response into lines
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	// Find the end of headers (double line break)
+	headerEndIdx := findHeaderEnd(data)
+	if headerEndIdx == -1 {
+		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
+			"no header end found", "parse", data)
+	}
+
+	headerSection := data[:headerEndIdx]
+	bodyBytes := data[headerEndIdx:]
+
+	// Parse status line and headers from header section
+	scanner := bufio.NewScanner(bytes.NewReader(headerSection))
 	if !scanner.Scan() {
 		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
 			"no status line found", "parse", data)
@@ -76,19 +105,6 @@ func Parse(data []byte) (*Response, error) {
 		resp.SetCookies = append(resp.SetCookies, cookie)
 	}
 
-	// Read body (everything after headers)
-	bodyData := &bytes.Buffer{}
-	for scanner.Scan() {
-		bodyData.WriteString(scanner.Text())
-		bodyData.WriteString("\r\n")
-	}
-
-	// Remove trailing CRLF from body if present
-	bodyBytes := bodyData.Bytes()
-	if len(bodyBytes) > 2 && string(bodyBytes[len(bodyBytes)-2:]) == "\r\n" {
-		bodyBytes = bodyBytes[:len(bodyBytes)-2]
-	}
-
 	// Store raw body and attempt decompression
 	resp.RawBody = bodyBytes
 
@@ -117,6 +133,34 @@ func Parse(data []byte) (*Response, error) {
 
 	// Auto-parse Transfer-Encoding header
 	resp.parseTransferEncoding()
+
+	// Auto-decode chunked transfer encoding if requested
+	if opts.AutoDecodeChunked && resp.IsBodyChunked {
+		decodedBody, trailers := chunked.Decode(resp.Body)
+
+		// Store original chunked body in RawBody
+		resp.RawBody = resp.Body
+
+		// Update body with decoded version
+		resp.Body = decodedBody
+		resp.IsBodyChunked = false
+
+		// Preserve trailers as headers if requested
+		if opts.PreserveChunkedTrailers && len(trailers) > 0 {
+			for name, value := range trailers {
+				resp.Headers.Set(name, value)
+			}
+		}
+
+		// Remove Transfer-Encoding: chunked header
+		resp.Headers.Del("Transfer-Encoding")
+		resp.TransferEncoding = []string{}
+
+		// Add Content-Length header with decoded body size
+		if len(decodedBody) > 0 {
+			resp.Headers.Set("Content-Length", strconv.Itoa(len(decodedBody)))
+		}
+	}
 
 	// Set-Cookie headers already parsed above during header parsing
 
@@ -227,4 +271,22 @@ func getDefaultStatusText(statusCode int) string {
 	default:
 		return "Unknown"
 	}
+}
+
+// findHeaderEnd finds the position after the double line break that separates headers from body
+// Returns the index where body starts (after \r\n\r\n or \n\n)
+func findHeaderEnd(data []byte) int {
+	// Try CRLF first (\r\n\r\n)
+	idx := bytes.Index(data, []byte("\r\n\r\n"))
+	if idx != -1 {
+		return idx + 4
+	}
+
+	// Try Unix line endings (\n\n)
+	idx = bytes.Index(data, []byte("\n\n"))
+	if idx != -1 {
+		return idx + 2
+	}
+
+	return -1
 }
