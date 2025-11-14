@@ -1,6 +1,6 @@
 # HTTPTools
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/WhileEndless/go-httptools)
+[![Version](https://img.shields.io/badge/version-1.1.1-blue.svg)](https://github.com/WhileEndless/go-httptools)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org/)
 
 A robust HTTP request/response parser and editor for Go. Parse raw HTTP messages with fault tolerance, preserve exact formatting, and edit messages like Burp Suite.
