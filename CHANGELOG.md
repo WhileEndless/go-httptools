@@ -5,6 +5,23 @@ All notable changes to HTTPTools will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2025-11-14
+
+### Added
+- **Regression Tests for Chunked Transfer Encoding**: Added comprehensive regression tests to ensure correct handling of chunked encoding edge cases
+  - Test for newline characters within chunk data
+  - Test for multiple chunks with embedded newlines (streaming JSON APIs scenario)
+  - Test for binary data containing 0x0A (newline) bytes
+  - Verifies that the parser correctly handles these scenarios without data loss
+
+### Notes
+- The parser implementation already correctly handles these edge cases
+- Tests serve as regression protection to prevent future bugs
+- All tests pass, confirming the parser works correctly with:
+  - Newlines in chunk data (e.g., JSON streaming APIs)
+  - Binary data containing newline bytes
+  - Multiple chunks with complex data patterns
+
 ## [1.1.0] - 2025-11-14
 
 ### Added
@@ -53,5 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive test suite
 - Multiple usage examples
 
+[1.1.1]: https://github.com/WhileEndless/go-httptools/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/WhileEndless/go-httptools/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/WhileEndless/go-httptools/releases/tag/v1.0.0
