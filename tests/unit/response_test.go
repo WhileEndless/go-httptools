@@ -238,3 +238,240 @@ test:deneme
 		t.Errorf("Expected redirect location, got '%s'", location)
 	}
 }
+
+// ============================================================================
+// Chunked Transfer Encoding Tests
+// ============================================================================
+
+func TestResponseParse_ChunkedDefault(t *testing.T) {
+	// Default behavior: chunked body is NOT auto-decoded
+	raw := []byte(`HTTP/1.1 200 OK
+Content-Type: application/json
+Transfer-Encoding: chunked
+
+5
+hello
+5
+world
+0
+
+`)
+
+	resp, err := response.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Should detect chunked encoding
+	if !resp.IsBodyChunked {
+		t.Error("Expected IsBodyChunked=true")
+	}
+
+	// Body should still be chunked (not decoded by default)
+	if !bytes.Contains(resp.Body, []byte("5\nhello")) {
+		t.Error("Expected body to remain chunked by default")
+	}
+
+	// Transfer-Encoding header should be present
+	if resp.Headers.Get("Transfer-Encoding") != "chunked" {
+		t.Error("Expected Transfer-Encoding header to be preserved")
+	}
+}
+
+func TestResponseParseWithOptions_AutoDecodeChunked(t *testing.T) {
+	// With AutoDecodeChunked: body is automatically decoded
+	raw := []byte(`HTTP/1.1 200 OK
+Content-Type: application/json
+Transfer-Encoding: chunked
+
+5
+hello
+5
+world
+0
+
+`)
+
+	opts := response.ParseOptions{
+		AutoDecodeChunked: true,
+	}
+
+	resp, err := response.ParseWithOptions(raw, opts)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Should have decoded the body
+	expectedBody := "helloworld"
+	if string(resp.Body) != expectedBody {
+		t.Errorf("Expected decoded body '%s', got '%s'", expectedBody, string(resp.Body))
+	}
+
+	// IsBodyChunked should be false after decoding
+	if resp.IsBodyChunked {
+		t.Error("Expected IsBodyChunked=false after auto-decode")
+	}
+
+	// Transfer-Encoding header should be removed
+	if resp.Headers.Get("Transfer-Encoding") != "" {
+		t.Error("Expected Transfer-Encoding header to be removed after decoding")
+	}
+
+	// Content-Length should be added
+	contentLength := resp.Headers.Get("Content-Length")
+	if contentLength != "10" {
+		t.Errorf("Expected Content-Length=10, got '%s'", contentLength)
+	}
+
+	// RawBody should contain original chunked data
+	if !bytes.Contains(resp.RawBody, []byte("5\nhello")) {
+		t.Error("Expected RawBody to contain original chunked data")
+	}
+}
+
+func TestResponseParseWithOptions_ChunkedWithTrailers(t *testing.T) {
+	// Note: Proper chunked encoding uses \r\n
+	raw := []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Checksum: abc123\r\nX-Custom: value\r\n\r\n")
+
+	opts := response.ParseOptions{
+		AutoDecodeChunked:       true,
+		PreserveChunkedTrailers: true,
+	}
+
+	resp, err := response.ParseWithOptions(raw, opts)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Body should be decoded
+	if string(resp.Body) != "hello" {
+		t.Errorf("Expected decoded body 'hello', got '%s'", string(resp.Body))
+	}
+
+	// Trailers should be preserved as headers
+	if resp.Headers.Get("X-Checksum") != "abc123" {
+		t.Error("Expected trailer X-Checksum to be preserved as header")
+	}
+
+	if resp.Headers.Get("X-Custom") != "value" {
+		t.Error("Expected trailer X-Custom to be preserved as header")
+	}
+}
+
+func TestResponseParseWithOptions_ChunkedWithoutTrailerPreservation(t *testing.T) {
+	raw := []byte(`HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+5
+hello
+0
+X-Checksum: abc123
+
+`)
+
+	opts := response.ParseOptions{
+		AutoDecodeChunked:       true,
+		PreserveChunkedTrailers: false, // Don't preserve trailers
+	}
+
+	resp, err := response.ParseWithOptions(raw, opts)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Body should be decoded
+	if string(resp.Body) != "hello" {
+		t.Errorf("Expected decoded body 'hello', got '%s'", string(resp.Body))
+	}
+
+	// Trailers should NOT be preserved as headers
+	if resp.Headers.Get("X-Checksum") != "" {
+		t.Error("Expected trailer X-Checksum NOT to be preserved as header")
+	}
+}
+
+func TestResponseParseWithOptions_NonChunkedResponse(t *testing.T) {
+	// Regular response without chunked encoding
+	raw := []byte(`HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 5
+
+hello`)
+
+	opts := response.ParseOptions{
+		AutoDecodeChunked: true, // Should have no effect
+	}
+
+	resp, err := response.ParseWithOptions(raw, opts)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Body should be unchanged
+	if string(resp.Body) != "hello" {
+		t.Errorf("Expected body 'hello', got '%s'", string(resp.Body))
+	}
+
+	// Should not be marked as chunked
+	if resp.IsBodyChunked {
+		t.Error("Expected IsBodyChunked=false for non-chunked response")
+	}
+}
+
+func TestResponseParseWithOptions_EmptyChunkedBody(t *testing.T) {
+	raw := []byte(`HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+0
+
+`)
+
+	opts := response.ParseOptions{
+		AutoDecodeChunked: true,
+	}
+
+	resp, err := response.ParseWithOptions(raw, opts)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Body should be empty
+	if len(resp.Body) != 0 {
+		t.Errorf("Expected empty body, got '%s'", string(resp.Body))
+	}
+
+	// Content-Length should not be set for empty body
+	if resp.Headers.Get("Content-Length") != "" {
+		t.Error("Expected no Content-Length for empty decoded body")
+	}
+}
+
+func TestResponseParseWithOptions_ComplexChunked(t *testing.T) {
+	// Note: Proper chunked encoding uses \r\n
+	// First chunk: 28 bytes (0x1c), second chunk: 26 bytes (0x1a)
+	raw := []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1c\r\n{\"message\":\"This is a test\"}\r\n1a\r\n{\"additional\":\"data here\"}\r\n0\r\n\r\n")
+
+	opts := response.ParseOptions{
+		AutoDecodeChunked: true,
+	}
+
+	resp, err := response.ParseWithOptions(raw, opts)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	expectedBody := `{"message":"This is a test"}{"additional":"data here"}`
+	actualBody := string(resp.Body)
+	if actualBody != expectedBody {
+		t.Errorf("Expected decoded body '%s' (len=%d), got '%s' (len=%d)",
+			expectedBody, len(expectedBody), actualBody, len(actualBody))
+		t.Errorf("Body bytes: %v", resp.Body)
+	}
+
+	// Verify Content-Length matches actual body length
+	expectedLength := len(actualBody)
+	actualLength := resp.GetContentLength()
+	if actualLength != expectedLength {
+		t.Errorf("Expected Content-Length=%d (body length), got %d", expectedLength, actualLength)
+	}
+}
