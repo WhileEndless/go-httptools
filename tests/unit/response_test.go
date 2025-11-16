@@ -2,9 +2,13 @@ package unit
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"fmt"
 	"testing"
 
 	"github.com/WhileEndless/go-httptools/pkg/response"
+	"github.com/andybalholm/brotli"
 )
 
 func TestResponseParse_Basic(t *testing.T) {
@@ -473,5 +477,332 @@ func TestResponseParseWithOptions_ComplexChunked(t *testing.T) {
 	actualLength := resp.GetContentLength()
 	if actualLength != expectedLength {
 		t.Errorf("Expected Content-Length=%d (body length), got %d", expectedLength, actualLength)
+	}
+}
+
+// ============================================================================
+// Content Encoding / Compression Tests
+// ============================================================================
+
+func TestResponseParse_GzipDecompression(t *testing.T) {
+	// Manually compress body with gzip
+	originalBody := []byte(`{"message":"This is compressed with gzip!"}`)
+
+	var gzipBuf bytes.Buffer
+	gzipWriter := gzip.NewWriter(&gzipBuf)
+	if _, err := gzipWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress with gzip: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("Failed to close gzip writer: %v", err)
+	}
+
+	// Build HTTP response with gzip-compressed body
+	raw := bytes.Buffer{}
+	raw.WriteString("HTTP/1.1 200 OK\r\n")
+	raw.WriteString("Content-Type: application/json\r\n")
+	raw.WriteString("Content-Encoding: gzip\r\n")
+	raw.WriteString("\r\n")
+	raw.Write(gzipBuf.Bytes())
+
+	resp, err := response.Parse(raw.Bytes())
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Should automatically decompress
+	if !resp.Compressed {
+		t.Error("Expected Compressed=true for gzip response")
+	}
+
+	if !bytes.Equal(resp.Body, originalBody) {
+		t.Errorf("Body not decompressed correctly.\nExpected: %s\nGot: %s",
+			string(originalBody), string(resp.Body))
+	}
+
+	// RawBody should contain compressed data
+	if !bytes.Equal(resp.RawBody, gzipBuf.Bytes()) {
+		t.Error("RawBody should contain original compressed data")
+	}
+}
+
+func TestResponseParse_DeflateDecompression(t *testing.T) {
+	// Manually compress body with deflate
+	originalBody := []byte(`{"message":"This is compressed with deflate!"}`)
+
+	var deflateBuf bytes.Buffer
+	deflateWriter, err := flate.NewWriter(&deflateBuf, flate.DefaultCompression)
+	if err != nil {
+		t.Fatalf("Failed to create deflate writer: %v", err)
+	}
+	if _, err := deflateWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress with deflate: %v", err)
+	}
+	if err := deflateWriter.Close(); err != nil {
+		t.Fatalf("Failed to close deflate writer: %v", err)
+	}
+
+	// Build HTTP response with deflate-compressed body
+	raw := bytes.Buffer{}
+	raw.WriteString("HTTP/1.1 200 OK\r\n")
+	raw.WriteString("Content-Type: application/json\r\n")
+	raw.WriteString("Content-Encoding: deflate\r\n")
+	raw.WriteString("\r\n")
+	raw.Write(deflateBuf.Bytes())
+
+	resp, err := response.Parse(raw.Bytes())
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Should automatically decompress
+	if !resp.Compressed {
+		t.Error("Expected Compressed=true for deflate response")
+	}
+
+	if !bytes.Equal(resp.Body, originalBody) {
+		t.Errorf("Body not decompressed correctly.\nExpected: %s\nGot: %s",
+			string(originalBody), string(resp.Body))
+	}
+
+	// RawBody should contain compressed data
+	if !bytes.Equal(resp.RawBody, deflateBuf.Bytes()) {
+		t.Error("RawBody should contain original compressed data")
+	}
+}
+
+func TestResponseParse_BrotliDecompression(t *testing.T) {
+	// Manually compress body with brotli
+	originalBody := []byte(`{"message":"This is compressed with brotli!"}`)
+
+	var brotliBuf bytes.Buffer
+	brotliWriter := brotli.NewWriter(&brotliBuf)
+	if _, err := brotliWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress with brotli: %v", err)
+	}
+	if err := brotliWriter.Close(); err != nil {
+		t.Fatalf("Failed to close brotli writer: %v", err)
+	}
+
+	// Build HTTP response with brotli-compressed body
+	raw := bytes.Buffer{}
+	raw.WriteString("HTTP/1.1 200 OK\r\n")
+	raw.WriteString("Content-Type: application/json\r\n")
+	raw.WriteString("Content-Encoding: br\r\n")
+	raw.WriteString("\r\n")
+	raw.Write(brotliBuf.Bytes())
+
+	resp, err := response.Parse(raw.Bytes())
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Should automatically decompress
+	if !resp.Compressed {
+		t.Error("Expected Compressed=true for brotli response")
+	}
+
+	if !bytes.Equal(resp.Body, originalBody) {
+		t.Errorf("Body not decompressed correctly.\nExpected: %s\nGot: %s",
+			string(originalBody), string(resp.Body))
+	}
+
+	// RawBody should contain compressed data
+	if !bytes.Equal(resp.RawBody, brotliBuf.Bytes()) {
+		t.Error("RawBody should contain original compressed data")
+	}
+}
+
+func TestResponseParse_BrotliFullName(t *testing.T) {
+	// Test with "brotli" instead of "br"
+	originalBody := []byte(`{"message":"Testing brotli full name encoding!"}`)
+
+	var brotliBuf bytes.Buffer
+	brotliWriter := brotli.NewWriter(&brotliBuf)
+	if _, err := brotliWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress with brotli: %v", err)
+	}
+	if err := brotliWriter.Close(); err != nil {
+		t.Fatalf("Failed to close brotli writer: %v", err)
+	}
+
+	// Build HTTP response with "brotli" content encoding
+	raw := bytes.Buffer{}
+	raw.WriteString("HTTP/1.1 200 OK\r\n")
+	raw.WriteString("Content-Type: application/json\r\n")
+	raw.WriteString("Content-Encoding: brotli\r\n")
+	raw.WriteString("\r\n")
+	raw.Write(brotliBuf.Bytes())
+
+	resp, err := response.Parse(raw.Bytes())
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Should automatically decompress
+	if !resp.Compressed {
+		t.Error("Expected Compressed=true for brotli response")
+	}
+
+	if !bytes.Equal(resp.Body, originalBody) {
+		t.Errorf("Body not decompressed correctly.\nExpected: %s\nGot: %s",
+			string(originalBody), string(resp.Body))
+	}
+}
+
+func TestResponseParse_NoCompressionHeader(t *testing.T) {
+	// Response without Content-Encoding header
+	raw := []byte(`HTTP/1.1 200 OK
+Content-Type: text/plain
+
+Hello, World!`)
+
+	resp, err := response.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Should not be marked as compressed
+	if resp.Compressed {
+		t.Error("Expected Compressed=false for uncompressed response")
+	}
+
+	expectedBody := "Hello, World!"
+	if string(resp.Body) != expectedBody {
+		t.Errorf("Expected body '%s', got '%s'", expectedBody, string(resp.Body))
+	}
+}
+
+func TestResponseParse_InvalidCompressedData(t *testing.T) {
+	// Invalid gzip data - should fall back to raw body (fault tolerance)
+	invalidGzipData := []byte("This is not valid gzip data!")
+
+	raw := bytes.Buffer{}
+	raw.WriteString("HTTP/1.1 200 OK\r\n")
+	raw.WriteString("Content-Encoding: gzip\r\n")
+	raw.WriteString("\r\n")
+	raw.Write(invalidGzipData)
+
+	resp, err := response.Parse(raw.Bytes())
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Should not be marked as compressed (decompression failed)
+	if resp.Compressed {
+		t.Error("Expected Compressed=false when decompression fails")
+	}
+
+	// Body should contain the raw (invalid) data
+	if !bytes.Equal(resp.Body, invalidGzipData) {
+		t.Error("Expected Body to contain raw data when decompression fails")
+	}
+}
+
+func TestResponseParse_LargeBrotliContent(t *testing.T) {
+	// Test with larger content
+	originalBody := bytes.Repeat([]byte("This is a repeated message for testing brotli compression with larger payloads. "), 100)
+
+	var brotliBuf bytes.Buffer
+	brotliWriter := brotli.NewWriter(&brotliBuf)
+	if _, err := brotliWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress with brotli: %v", err)
+	}
+	if err := brotliWriter.Close(); err != nil {
+		t.Fatalf("Failed to close brotli writer: %v", err)
+	}
+
+	// Build HTTP response
+	raw := bytes.Buffer{}
+	raw.WriteString("HTTP/1.1 200 OK\r\n")
+	raw.WriteString("Content-Type: text/plain\r\n")
+	raw.WriteString("Content-Encoding: br\r\n")
+	raw.WriteString("\r\n")
+	raw.Write(brotliBuf.Bytes())
+
+	resp, err := response.Parse(raw.Bytes())
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Verify decompression
+	if !resp.Compressed {
+		t.Error("Expected Compressed=true")
+	}
+
+	if !bytes.Equal(resp.Body, originalBody) {
+		t.Errorf("Body not decompressed correctly. Expected %d bytes, got %d bytes",
+			len(originalBody), len(resp.Body))
+	}
+
+	// Verify compression is actually happening (compressed should be smaller)
+	compressionRatio := float64(len(brotliBuf.Bytes())) / float64(len(originalBody))
+	if compressionRatio >= 0.9 {
+		t.Logf("Warning: Compression ratio is %.2f%% - might not be compressing effectively",
+			compressionRatio*100)
+	}
+}
+
+func TestResponseParse_HTMLWithBrotli(t *testing.T) {
+	// Real-world scenario: HTML compressed with brotli
+	originalHTML := []byte(`<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Page</title>
+    <meta charset="UTF-8">
+</head>
+<body>
+    <h1>Welcome to the test page!</h1>
+    <p>This HTML content is compressed with Brotli compression.</p>
+    <ul>
+        <li>Item 1</li>
+        <li>Item 2</li>
+        <li>Item 3</li>
+    </ul>
+</body>
+</html>`)
+
+	var brotliBuf bytes.Buffer
+	brotliWriter := brotli.NewWriter(&brotliBuf)
+	if _, err := brotliWriter.Write(originalHTML); err != nil {
+		t.Fatalf("Failed to compress HTML: %v", err)
+	}
+	if err := brotliWriter.Close(); err != nil {
+		t.Fatalf("Failed to close brotli writer: %v", err)
+	}
+
+	// Build realistic HTTP response
+	raw := bytes.Buffer{}
+	raw.WriteString("HTTP/1.1 200 OK\r\n")
+	raw.WriteString("Server: nginx\r\n")
+	raw.WriteString("Date: Sun, 16 Nov 2025 14:08:08 GMT\r\n")
+	raw.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+	raw.WriteString("Content-Encoding: br\r\n")
+	raw.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(brotliBuf.Bytes())))
+	raw.WriteString("\r\n")
+	raw.Write(brotliBuf.Bytes())
+
+	resp, err := response.Parse(raw.Bytes())
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Verify response properties
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	if resp.GetServer() != "nginx" {
+		t.Errorf("Expected server 'nginx', got '%s'", resp.GetServer())
+	}
+
+	// Verify decompression
+	if !resp.Compressed {
+		t.Error("Expected Compressed=true for brotli HTML response")
+	}
+
+	if !bytes.Equal(resp.Body, originalHTML) {
+		t.Errorf("HTML not decompressed correctly.\nExpected:\n%s\n\nGot:\n%s",
+			string(originalHTML), string(resp.Body))
 	}
 }
