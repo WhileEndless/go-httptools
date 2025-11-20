@@ -55,18 +55,20 @@ func Parse(data []byte) (*Request, error) {
 	}
 
 	// Read body (everything after headers)
-	bodyData := &bytes.Buffer{}
-	for scanner.Scan() {
-		bodyData.WriteString(scanner.Text())
-		bodyData.WriteString("\r\n")
+	// Use direct byte slicing instead of Scanner to avoid 64KB limitation
+	headerEnd := findHeaderEndIndex(data)
+	if headerEnd >= 0 {
+		separatorLen := getHeaderSeparatorLength(data, headerEnd)
+		bodyStart := headerEnd + separatorLen // Skip past separator
+		if bodyStart < len(data) {
+			req.Body = data[bodyStart:]
+		} else {
+			req.Body = []byte{}
+		}
+	} else {
+		// No header end marker found, no body present
+		req.Body = []byte{}
 	}
-
-	// Remove trailing CRLF from body if present
-	bodyBytes := bodyData.Bytes()
-	if len(bodyBytes) > 2 && string(bodyBytes[len(bodyBytes)-2:]) == "\r\n" {
-		bodyBytes = bodyBytes[:len(bodyBytes)-2]
-	}
-	req.Body = bodyBytes
 
 	// Auto-parse Transfer-Encoding header
 	req.parseTransferEncoding()
@@ -147,4 +149,43 @@ func (r *Request) parseRequestLine(line string) error {
 	}
 
 	return nil
+}
+
+// findHeaderEndIndex finds the index of the header end marker (\r\n\r\n or \n\n)
+// Returns both the index and the length of the separator (4 for CRLF, 2 for LF)
+func findHeaderEndIndex(data []byte) int {
+	// First try to find CRLF separator (\r\n\r\n)
+	for i := 0; i < len(data)-3; i++ {
+		if data[i] == '\r' && data[i+1] == '\n' &&
+			data[i+2] == '\r' && data[i+3] == '\n' {
+			return i
+		}
+	}
+
+	// Fallback: try to find LF separator (\n\n) for fault tolerance
+	for i := 0; i < len(data)-1; i++ {
+		if data[i] == '\n' && data[i+1] == '\n' {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// getHeaderSeparatorLength returns the length of the header separator at the given position
+func getHeaderSeparatorLength(data []byte, pos int) int {
+	// Check if it's CRLF\CRLF (4 bytes)
+	if pos+3 < len(data) &&
+		data[pos] == '\r' && data[pos+1] == '\n' &&
+		data[pos+2] == '\r' && data[pos+3] == '\n' {
+		return 4
+	}
+
+	// Check if it's LF\LF (2 bytes)
+	if pos+1 < len(data) && data[pos] == '\n' && data[pos+1] == '\n' {
+		return 2
+	}
+
+	// Default to CRLF\CRLF
+	return 4
 }
