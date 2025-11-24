@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -938,6 +939,126 @@ func TestResponseParse_ComplexFormatPreservation(t *testing.T) {
 
 	if string(headerBytes) != expectedHeaders {
 		t.Errorf("Complex format not preserved:\nExpected: %q\nGot: %q", expectedHeaders, headerBytes)
+	}
+}
+
+// ============================================================================
+// ParseReader Tests
+// ============================================================================
+
+func TestResponseParseReader_Basic(t *testing.T) {
+	raw := []byte(`HTTP/1.1 200 OK
+Content-Type: application/json
+Server: nginx
+
+{"message":"success"}`)
+
+	reader := bytes.NewReader(raw)
+	resp, err := response.ParseReader(reader)
+	if err != nil {
+		t.Fatalf("ParseReader failed: %v", err)
+	}
+
+	if resp.Version != "HTTP/1.1" {
+		t.Errorf("Expected version HTTP/1.1, got %s", resp.Version)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	expectedBody := `{"message":"success"}`
+	if string(resp.Body) != expectedBody {
+		t.Errorf("Expected body '%s', got '%s'", expectedBody, string(resp.Body))
+	}
+}
+
+func TestResponseParseReader_WithOptions(t *testing.T) {
+	raw := []byte(`HTTP/1.1 200 OK
+Content-Type: application/json
+Transfer-Encoding: chunked
+
+5
+hello
+5
+world
+0
+
+`)
+
+	reader := bytes.NewReader(raw)
+	opts := response.ParseOptions{
+		AutoDecodeChunked: true,
+	}
+
+	resp, err := response.ParseReaderWithOptions(reader, opts)
+	if err != nil {
+		t.Fatalf("ParseReaderWithOptions failed: %v", err)
+	}
+
+	expectedBody := "helloworld"
+	if string(resp.Body) != expectedBody {
+		t.Errorf("Expected decoded body '%s', got '%s'", expectedBody, string(resp.Body))
+	}
+
+	if resp.IsBodyChunked {
+		t.Error("Expected IsBodyChunked=false after auto-decode")
+	}
+}
+
+func TestResponseParseReader_EmptyReader(t *testing.T) {
+	reader := bytes.NewReader([]byte{})
+	_, err := response.ParseReader(reader)
+	if err == nil {
+		t.Error("Expected error for empty reader")
+	}
+}
+
+// errorReader simulates a reader that returns an error
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (n int, err error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func TestResponseParseReader_ReaderError(t *testing.T) {
+	reader := &errorReader{}
+	_, err := response.ParseReader(reader)
+	if err == nil {
+		t.Error("Expected error when reader fails")
+	}
+}
+
+func TestResponseParseReader_GzipCompressed(t *testing.T) {
+	originalBody := []byte(`{"message":"compressed data"}`)
+
+	var gzipBuf bytes.Buffer
+	gzipWriter := gzip.NewWriter(&gzipBuf)
+	if _, err := gzipWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("Failed to close gzip writer: %v", err)
+	}
+
+	raw := bytes.Buffer{}
+	raw.WriteString("HTTP/1.1 200 OK\r\n")
+	raw.WriteString("Content-Encoding: gzip\r\n")
+	raw.WriteString("\r\n")
+	raw.Write(gzipBuf.Bytes())
+
+	reader := bytes.NewReader(raw.Bytes())
+	resp, err := response.ParseReader(reader)
+	if err != nil {
+		t.Fatalf("ParseReader failed: %v", err)
+	}
+
+	if !resp.Compressed {
+		t.Error("Expected Compressed=true")
+	}
+
+	if !bytes.Equal(resp.Body, originalBody) {
+		t.Errorf("Body not decompressed correctly")
 	}
 }
 

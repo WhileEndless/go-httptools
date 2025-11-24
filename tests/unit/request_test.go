@@ -2,6 +2,7 @@ package unit
 
 import (
 	"bytes"
+	"io"
 	"testing"
 
 	"github.com/WhileEndless/go-httptools/pkg/request"
@@ -424,5 +425,77 @@ func TestRequestParse_ComplexFormatPreservation(t *testing.T) {
 
 	if string(headerBytes) != expectedHeaders {
 		t.Errorf("Complex format not preserved:\nExpected: %q\nGot: %q", expectedHeaders, headerBytes)
+	}
+}
+
+// ============================================================================
+// ParseReader Tests
+// ============================================================================
+
+func TestRequestParseReader_Basic(t *testing.T) {
+	raw := []byte(`GET /api/users HTTP/1.1
+Host: example.com
+User-Agent: test
+
+`)
+
+	reader := bytes.NewReader(raw)
+	req, err := request.ParseReader(reader)
+	if err != nil {
+		t.Fatalf("ParseReader failed: %v", err)
+	}
+
+	if req.Method != "GET" {
+		t.Errorf("Expected method GET, got %s", req.Method)
+	}
+
+	if req.URL != "/api/users" {
+		t.Errorf("Expected URL /api/users, got %s", req.URL)
+	}
+
+	if req.Version != "HTTP/1.1" {
+		t.Errorf("Expected version HTTP/1.1, got %s", req.Version)
+	}
+}
+
+func TestRequestParseReader_WithBody(t *testing.T) {
+	raw := []byte(`POST /api/login HTTP/1.1
+Host: example.com
+Content-Type: application/json
+
+{"username":"admin","password":"secret"}`)
+
+	reader := bytes.NewReader(raw)
+	req, err := request.ParseReader(reader)
+	if err != nil {
+		t.Fatalf("ParseReader failed: %v", err)
+	}
+
+	expectedBody := `{"username":"admin","password":"secret"}`
+	if string(req.Body) != expectedBody {
+		t.Errorf("Expected body '%s', got '%s'", expectedBody, string(req.Body))
+	}
+}
+
+func TestRequestParseReader_EmptyReader(t *testing.T) {
+	reader := bytes.NewReader([]byte{})
+	_, err := request.ParseReader(reader)
+	if err == nil {
+		t.Error("Expected error for empty reader")
+	}
+}
+
+// requestErrorReader simulates a reader that returns an error
+type requestErrorReader struct{}
+
+func (e *requestErrorReader) Read(p []byte) (n int, err error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func TestRequestParseReader_ReaderError(t *testing.T) {
+	reader := &requestErrorReader{}
+	_, err := request.ParseReader(reader)
+	if err == nil {
+		t.Error("Expected error when reader fails")
 	}
 }

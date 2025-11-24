@@ -2,6 +2,7 @@ package response
 
 import (
 	"bytes"
+	"io"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,24 @@ type ParseOptions struct {
 // Uses default options (no automatic chunked decoding)
 func Parse(data []byte) (*Response, error) {
 	return ParseWithOptions(data, ParseOptions{})
+}
+
+// ParseReader parses an HTTP response from an io.Reader
+// Reads all data from the reader and parses it using default options
+// Suitable for integration with streaming sources like buffers or file readers
+func ParseReader(r io.Reader) (*Response, error) {
+	return ParseReaderWithOptions(r, ParseOptions{})
+}
+
+// ParseReaderWithOptions parses an HTTP response from an io.Reader with custom options
+// Reads all data from the reader and parses it with the specified options
+func ParseReaderWithOptions(r io.Reader, opts ParseOptions) (*Response, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
+			"failed to read from reader: "+err.Error(), "parseReader", nil)
+	}
+	return ParseWithOptions(data, opts)
 }
 
 // ParseWithOptions parses raw HTTP response data with custom options

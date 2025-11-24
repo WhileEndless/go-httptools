@@ -1,6 +1,7 @@
 package request
 
 import (
+	"io"
 	"strings"
 
 	"github.com/WhileEndless/go-httptools/pkg/compression"
@@ -11,6 +12,23 @@ import (
 // Parse parses raw HTTP request data with fault tolerance
 // Preserves original header formatting and line endings
 func Parse(data []byte) (*Request, error) {
+	return parse(data)
+}
+
+// ParseReader parses an HTTP request from an io.Reader
+// Reads all data from the reader and parses it
+// Suitable for integration with streaming sources like buffers or file readers
+func ParseReader(r io.Reader) (*Request, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
+			"failed to read from reader: "+err.Error(), "parseReader", nil)
+	}
+	return parse(data)
+}
+
+// parse is the internal implementation for parsing HTTP request data
+func parse(data []byte) (*Request, error) {
 	if len(data) == 0 {
 		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
 			"empty request data", "parse", data)
