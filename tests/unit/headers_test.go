@@ -176,9 +176,9 @@ func TestOrderedHeaders_PreserveOriginalFormat_DoubleSpace(t *testing.T) {
 		t.Fatalf("Parse error: %v", err)
 	}
 
-	// Get should return trimmed value
-	if got := h.Get("Host"); got != "example.com" {
-		t.Errorf("Get() expected 'example.com', got '%s'", got)
+	// Get should return original value (with whitespace)
+	if got := h.Get("Host"); got != "  example.com  " {
+		t.Errorf("Get() expected '  example.com  ', got '%s'", got)
 	}
 
 	// Build should preserve original format
@@ -214,8 +214,9 @@ func TestOrderedHeaders_PreserveOriginalFormat_TabAfterColon(t *testing.T) {
 		t.Fatalf("Parse error: %v", err)
 	}
 
-	if got := h.Get("X-Tab"); got != "value" {
-		t.Errorf("Get() expected 'value', got '%s'", got)
+	// Get returns original value with tab
+	if got := h.Get("X-Tab"); got != "\tvalue" {
+		t.Errorf("Get() expected '\\tvalue', got '%s'", got)
 	}
 
 	built := h.Build()
@@ -232,8 +233,9 @@ func TestOrderedHeaders_PreserveOriginalFormat_MultipleSpaces(t *testing.T) {
 		t.Fatalf("Parse error: %v", err)
 	}
 
-	if got := h.Get("X-Spaced"); got != "spaced" {
-		t.Errorf("Get() expected 'spaced', got '%s'", got)
+	// Get returns original value with whitespace preserved
+	if got := h.Get("X-Spaced"); got != "   spaced   " {
+		t.Errorf("Get() expected '   spaced   ', got '%s'", got)
 	}
 
 	built := h.Build()
@@ -401,8 +403,9 @@ func TestOrderedHeaders_SpaceInValue(t *testing.T) {
 		t.Fatalf("Parse error: %v", err)
 	}
 
-	if got := h.Get("X-Sentence"); got != "Hello World Test" {
-		t.Errorf("Get() expected 'Hello World Test', got '%s'", got)
+	// Get returns original value with leading space after colon preserved
+	if got := h.Get("X-Sentence"); got != " Hello World Test" {
+		t.Errorf("Get() expected ' Hello World Test', got '%s'", got)
 	}
 
 	built := h.Build()

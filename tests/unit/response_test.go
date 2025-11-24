@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/WhileEndless/go-httptools/pkg/response"
@@ -276,8 +277,8 @@ world
 		t.Error("Expected body to remain chunked by default")
 	}
 
-	// Transfer-Encoding header should be present
-	if resp.Headers.Get("Transfer-Encoding") != "chunked" {
+	// Transfer-Encoding header should be present (value may have leading space)
+	if strings.TrimSpace(resp.Headers.Get("Transfer-Encoding")) != "chunked" {
 		t.Error("Expected Transfer-Encoding header to be preserved")
 	}
 }
@@ -818,9 +819,9 @@ func TestResponseParse_PreserveHeaderFormat(t *testing.T) {
 		t.Fatalf("Parse failed: %v", err)
 	}
 
-	// Get should return trimmed values
-	if got := resp.Headers.Get("Content-Type"); got != "application/json" {
-		t.Errorf("Get(\"Content-Type\") expected \"application/json\", got \"%s\"", got)
+	// Get returns original values (with whitespace preserved)
+	if got := resp.Headers.Get("Content-Type"); got != "  application/json  " {
+		t.Errorf("Get(\"Content-Type\") expected \"  application/json  \", got \"%s\"", got)
 	}
 
 	if got := resp.Headers.Get("X-Custom"); got != "value" {
@@ -914,11 +915,11 @@ func TestResponseParse_ComplexFormatPreservation(t *testing.T) {
 		t.Fatalf("Parse failed: %v", err)
 	}
 
-	// Verify parsed values (trimmed)
+	// Verify parsed values (original, untrimmed)
 	expectations := map[string]string{
 		"Content-Type": "application/json",
-		"Server":       "nginx",
-		"X-Tab":        "value",
+		"Server":       "  nginx  ",
+		"X-Tab":        "\tvalue",
 		"X-Empty":      "",
 	}
 

@@ -3,6 +3,7 @@ package response
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/WhileEndless/go-httptools/pkg/chunked"
 	"github.com/WhileEndless/go-httptools/pkg/compression"
@@ -79,7 +80,7 @@ func (r *Response) Clone() *Response {
 
 // GetContentLength returns the Content-Length header value as integer
 func (r *Response) GetContentLength() int {
-	lengthStr := r.Headers.Get("Content-Length")
+	lengthStr := strings.TrimSpace(r.Headers.Get("Content-Length"))
 	if lengthStr == "" {
 		return 0
 	}
@@ -92,19 +93,19 @@ func (r *Response) GetContentLength() int {
 	return length
 }
 
-// GetContentType returns the Content-Type header value
+// GetContentType returns the Content-Type header value (trimmed)
 func (r *Response) GetContentType() string {
-	return r.Headers.Get("Content-Type")
+	return strings.TrimSpace(r.Headers.Get("Content-Type"))
 }
 
-// GetContentEncoding returns the Content-Encoding header value
+// GetContentEncoding returns the Content-Encoding header value (trimmed)
 func (r *Response) GetContentEncoding() string {
-	return r.Headers.Get("Content-Encoding")
+	return strings.TrimSpace(r.Headers.Get("Content-Encoding"))
 }
 
-// GetServer returns the Server header value
+// GetServer returns the Server header value (trimmed)
 func (r *Response) GetServer() string {
-	return r.Headers.Get("Server")
+	return strings.TrimSpace(r.Headers.Get("Server"))
 }
 
 // SetBody sets the response body and updates Content-Length
@@ -160,10 +161,10 @@ func (r *Response) IsServerError() bool {
 	return r.StatusCode >= 500 && r.StatusCode < 600
 }
 
-// GetRedirectLocation returns the Location header for redirects
+// GetRedirectLocation returns the Location header for redirects (trimmed)
 func (r *Response) GetRedirectLocation() string {
 	if r.IsRedirect() {
-		return r.Headers.Get("Location")
+		return strings.TrimSpace(r.Headers.Get("Location"))
 	}
 	return ""
 }

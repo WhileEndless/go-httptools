@@ -239,9 +239,9 @@ func TestRequestParse_PreserveHeaderFormat(t *testing.T) {
 		t.Fatalf("Parse failed: %v", err)
 	}
 
-	// Get should return trimmed values
-	if got := req.Headers.Get("Host"); got != "example.com" {
-		t.Errorf("Get('Host') expected 'example.com', got '%s'", got)
+	// Get returns original values (with whitespace preserved)
+	if got := req.Headers.Get("Host"); got != "  example.com  " {
+		t.Errorf("Get('Host') expected '  example.com  ', got '%s'", got)
 	}
 
 	if got := req.Headers.Get("X-Custom"); got != "value" {
@@ -399,13 +399,13 @@ func TestRequestParse_ComplexFormatPreservation(t *testing.T) {
 		t.Fatalf("Parse failed: %v", err)
 	}
 
-	// Verify parsed values (trimmed)
+	// Verify parsed values (original, untrimmed)
 	expectations := map[string]string{
 		"Host":       "example.com",
-		"User-Agent": "Mozilla",
-		"Accept":     "*/*",
+		"User-Agent": "  Mozilla  ",
+		"Accept":     "\t*/*",
 		"X-Empty":    "",
-		"X-Spaces":   "value",
+		"X-Spaces":   "   value   ",
 	}
 
 	for name, expected := range expectations {

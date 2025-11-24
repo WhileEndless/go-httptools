@@ -64,9 +64,9 @@ func ParseHeaders(data []byte) (*OrderedHeaders, error) {
 			continue
 		}
 
-		// Parse name and value (trimmed for programmatic access)
+		// Parse name and value - preserve original value (no trimming)
 		name := strings.TrimSpace(lineContent[:colonPos])
-		value := strings.TrimSpace(lineContent[colonPos+1:])
+		value := lineContent[colonPos+1:] // Keep original value with whitespace
 
 		// Handle empty header name (fault tolerance)
 		if name == "" {
@@ -109,13 +109,14 @@ func (h *OrderedHeaders) Build() []byte {
 
 // BuildNormalized reconstructs headers in standard format (Name: Value\r\n)
 // Use this when you need consistent formatting regardless of original input
+// Values are trimmed of leading/trailing whitespace
 func (h *OrderedHeaders) BuildNormalized() []byte {
 	var buf bytes.Buffer
 
 	for _, header := range h.All() {
 		buf.WriteString(header.Name)
 		buf.WriteString(": ")
-		buf.WriteString(header.Value)
+		buf.WriteString(strings.TrimSpace(header.Value))
 		buf.WriteString("\r\n")
 	}
 

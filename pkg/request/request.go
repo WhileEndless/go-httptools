@@ -97,24 +97,24 @@ func (r *Request) Clone() *Request {
 	return clone
 }
 
-// GetContentLength returns the Content-Length header value
+// GetContentLength returns the Content-Length header value (trimmed)
 func (r *Request) GetContentLength() string {
-	return r.Headers.Get("Content-Length")
+	return strings.TrimSpace(r.Headers.Get("Content-Length"))
 }
 
-// GetContentType returns the Content-Type header value
+// GetContentType returns the Content-Type header value (trimmed)
 func (r *Request) GetContentType() string {
-	return r.Headers.Get("Content-Type")
+	return strings.TrimSpace(r.Headers.Get("Content-Type"))
 }
 
-// GetHost returns the Host header value
+// GetHost returns the Host header value (trimmed)
 func (r *Request) GetHost() string {
-	return r.Headers.Get("Host")
+	return strings.TrimSpace(r.Headers.Get("Host"))
 }
 
-// GetUserAgent returns the User-Agent header value
+// GetUserAgent returns the User-Agent header value (trimmed)
 func (r *Request) GetUserAgent() string {
-	return r.Headers.Get("User-Agent")
+	return strings.TrimSpace(r.Headers.Get("User-Agent"))
 }
 
 // SetBody sets the request body and updates Content-Length
@@ -325,7 +325,7 @@ func (r *Request) BuildHTTP2() []byte {
 // ParseCookies extracts cookies from Cookie header
 // Updates Cookies field
 func (r *Request) ParseCookies() {
-	cookieHeader := r.Headers.Get("Cookie")
+	cookieHeader := strings.TrimSpace(r.Headers.Get("Cookie"))
 	if cookieHeader == "" {
 		r.Cookies = []cookies.Cookie{}
 		return
