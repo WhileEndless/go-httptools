@@ -1,6 +1,6 @@
 # HTTPTools
 
-[![Version](https://img.shields.io/badge/version-1.3.2-blue.svg)](https://github.com/WhileEndless/go-httptools)
+[![Version](https://img.shields.io/badge/version-1.3.3-blue.svg)](https://github.com/WhileEndless/go-httptools)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org/)
 
 A robust HTTP request/response parser and editor for Go. Parse raw HTTP messages with fault tolerance, preserve exact formatting, and edit messages like Burp Suite.
@@ -15,8 +15,10 @@ A robust HTTP request/response parser and editor for Go. Parse raw HTTP messages
 - **BuildOptions system** for flexible output control
 - **HTTP/2 format support** with pseudo-headers
 - **Search functionality** for requests/responses
-- **Zstd (Zstandard) compression support** (NEW in v1.3.2)
-- **Magic byte detection** for automatic compression identification (NEW in v1.3.2)
+- **Streaming support** for large payloads (NEW in v1.3.3)
+- **io.Reader/io.Writer interfaces** for memory-efficient processing (NEW in v1.3.3)
+- **Zstd (Zstandard) compression support**
+- **Magic byte detection** for automatic compression identification
 - **Parse → Edit → Rebuild** pipeline
 - **Exact format preservation** (spacing, line endings, formatting)
 - **Minimal external dependencies** (brotli and zstd compression libraries only)
@@ -224,6 +226,86 @@ windows := "GET / HTTP/1.1\r\nHost: example.com\r\ntest:deneme\r\n\r\n"
 // Both parse correctly and preserve original format
 ```
 
+## Streaming Support (NEW in v1.3.3)
+
+Handle large HTTP payloads (10GB+) without loading the entire body into memory:
+
+### Streaming Parse (Headers Only)
+
+```go
+import "github.com/WhileEndless/go-httptools/pkg/response"
+
+// Parse headers only, get body as io.Reader
+resp, bodyReader, err := response.ParseHeadersFromReader(conn)
+if err != nil {
+    return err
+}
+
+// Headers are immediately available
+fmt.Printf("Status: %d\n", resp.StatusCode)
+fmt.Printf("Content-Length: %d\n", resp.GetContentLength())
+
+// Stream body to file without loading into memory
+outputFile, _ := os.Create("large-download.bin")
+defer outputFile.Close()
+io.Copy(outputFile, bodyReader)
+```
+
+### Streaming Write (io.Writer)
+
+```go
+import "github.com/WhileEndless/go-httptools/pkg/request"
+
+req := request.NewRequest()
+req.Method = "POST"
+req.URL = "/api/upload"
+req.Version = "HTTP/1.1"
+req.Headers.Set("Host", "example.com")
+req.Headers.Set("Content-Type", "application/octet-stream")
+req.Headers.Set("Content-Length", "10737418240") // 10GB
+
+// Write headers to connection
+req.WriteHeadersTo(conn)
+
+// Stream body from file (not loaded into memory)
+largeFile, _ := os.Open("large-file.bin")
+defer largeFile.Close()
+io.Copy(conn, largeFile)
+```
+
+### Parse from io.Reader
+
+```go
+// Parse complete request/response from any io.Reader
+file, _ := os.Open("response.bin")
+defer file.Close()
+
+resp, err := response.ParseReader(file)
+// Or with options:
+resp, err := response.ParseReaderWithOptions(file, response.ParseOptions{
+    AutoDecodeChunked: true,
+})
+```
+
+### Streaming Methods
+
+**Response:**
+- `ParseReader(io.Reader)` - Parse complete response from reader
+- `ParseReaderWithOptions(io.Reader, ParseOptions)` - Parse with options
+- `ParseHeadersFromReader(io.Reader)` - Parse headers only, return body reader
+- `WriteTo(io.Writer)` - Write complete response (implements io.WriterTo)
+- `WriteHeadersTo(io.Writer)` - Write only status line and headers
+- `WriteBodyTo(io.Writer)` - Write only body
+- `CopyBodyFrom(src io.Reader, dst io.Writer)` - Stream body from reader to writer
+
+**Request:**
+- `ParseReader(io.Reader)` - Parse complete request from reader
+- `ParseHeadersFromReader(io.Reader)` - Parse headers only, return body reader
+- `WriteTo(io.Writer)` - Write complete request (implements io.WriterTo)
+- `WriteHeadersTo(io.Writer)` - Write only request line and headers
+- `WriteBodyTo(io.Writer)` - Write only body
+- `CopyBodyFrom(src io.Reader, dst io.Writer)` - Stream body from reader to writer
+
 ## Burp Suite-like Editing
 
 ```go
@@ -279,13 +361,18 @@ fmt.Printf("Replaced %d occurrences\n", count)
 ### Request Package
 - `request.Parse([]byte)` - Standard parsing with normalization
 - `request.ParseRaw([]byte)` - Exact format preservation parsing
+- `request.ParseReader(io.Reader)` - Parse from io.Reader (NEW v1.3.3)
+- `request.ParseHeadersFromReader(io.Reader)` - Stream parse, headers only (NEW v1.3.3)
 - `req.Build()` - Standard rebuild
 - `rawReq.BuildRaw()` - Exact format rebuild
-- `req.BuildWithOptions(opts)` - Build with full control (NEW)
-- `req.BuildAsHTTP2()` - Build as HTTP/2 format (NEW)
-- `req.BuildNormalized()` - Build normalized HTTP/1.1 (NEW)
-- `req.BuildDecompressed()` - Build with decompressed body (NEW)
-- `req.BuildDechunked()` - Build without chunked encoding (NEW)
+- `req.BuildWithOptions(opts)` - Build with full control
+- `req.BuildAsHTTP2()` - Build as HTTP/2 format
+- `req.BuildNormalized()` - Build normalized HTTP/1.1
+- `req.BuildDecompressed()` - Build with decompressed body
+- `req.BuildDechunked()` - Build without chunked encoding
+- `req.WriteTo(io.Writer)` - Stream write complete request (NEW v1.3.3)
+- `req.WriteHeadersTo(io.Writer)` - Stream write headers only (NEW v1.3.3)
+- `req.WriteBodyTo(io.Writer)` - Stream write body only (NEW v1.3.3)
 - `req.IsCompressed()` - Check if body is compressed
 - `req.IsChunked()` - Check if body is chunked
 - `req.Search(pattern, opts)` - Search in request
@@ -299,12 +386,18 @@ fmt.Printf("Replaced %d occurrences\n", count)
 ### Response Package
 - `response.Parse([]byte)` - Parse with automatic decompression
 - `response.ParseWithOptions([]byte, ParseOptions)` - Parse with custom options
+- `response.ParseReader(io.Reader)` - Parse from io.Reader (NEW v1.3.3)
+- `response.ParseReaderWithOptions(io.Reader, ParseOptions)` - Parse from reader with options (NEW v1.3.3)
+- `response.ParseHeadersFromReader(io.Reader)` - Stream parse, headers only (NEW v1.3.3)
 - `resp.Build()` - Rebuild (compressed if original was compressed)
-- `resp.BuildWithOptions(opts)` - Build with full control (NEW)
-- `resp.BuildAsHTTP2()` - Build as HTTP/2 format (NEW)
-- `resp.BuildNormalized()` - Build normalized HTTP/1.1 (NEW)
+- `resp.BuildWithOptions(opts)` - Build with full control
+- `resp.BuildAsHTTP2()` - Build as HTTP/2 format
+- `resp.BuildNormalized()` - Build normalized HTTP/1.1
 - `resp.BuildDecompressed()` - Rebuild with decompressed body
-- `resp.BuildDechunked()` - Build without chunked encoding (NEW)
+- `resp.BuildDechunked()` - Build without chunked encoding
+- `resp.WriteTo(io.Writer)` - Stream write complete response (NEW v1.3.3)
+- `resp.WriteHeadersTo(io.Writer)` - Stream write headers only (NEW v1.3.3)
+- `resp.WriteBodyTo(io.Writer)` - Stream write body only (NEW v1.3.3)
 - `resp.IsCompressed()` - Check if body is compressed
 - `resp.IsChunked()` - Check if body is chunked
 - `resp.Search(pattern, opts)` - Search in response
@@ -448,13 +541,22 @@ import (
 )
 
 func main() {
-    fmt.Println("HTTPTools version:", version.GetVersion()) // Output: 1.3.2
+    fmt.Println("HTTPTools version:", version.GetVersion()) // Output: 1.3.3
 }
 ```
 
-Current version: **1.3.2**
+Current version: **1.3.3**
 
 ### Changelog
+
+**v1.3.3**
+- Add streaming support for large HTTP payloads (10GB+)
+- Add `ParseReader()` and `ParseReaderWithOptions()` for parsing from io.Reader
+- Add `ParseHeadersFromReader()` for streaming parse (headers only, body as io.Reader)
+- Add `WriteTo()`, `WriteHeadersTo()`, `WriteBodyTo()` for streaming output
+- Add `CopyBodyFrom()` helper for streaming body transfer
+- Implements `io.WriterTo` interface for Request and Response
+- Memory-efficient processing of large files without loading entire body
 
 **v1.3.2**
 - Add Zstd (Zstandard) compression support

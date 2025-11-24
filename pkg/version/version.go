@@ -2,7 +2,7 @@
 package version
 
 // Version is the current version of the HTTPTools library
-const Version = "1.3.2"
+const Version = "1.3.3"
 
 // GetVersion returns the current version of the library
 func GetVersion() string {
