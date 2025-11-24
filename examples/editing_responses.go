@@ -55,6 +55,9 @@ Page not found`)
 	
 	// Build decompressed version
 	fmt.Println("\n=== Decompressed Version ===")
-	decompressed := compressedResp.BuildDecompressed()
+	decompressed, err := compressedResp.BuildDecompressed()
+	if err != nil {
+		log.Fatal("Failed to build decompressed:", err)
+	}
 	fmt.Println(string(decompressed))
 }

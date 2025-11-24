@@ -1,6 +1,6 @@
 # HTTPTools
 
-[![Version](https://img.shields.io/badge/version-1.3.1-blue.svg)](https://github.com/WhileEndless/go-httptools)
+[![Version](https://img.shields.io/badge/version-1.3.2-blue.svg)](https://github.com/WhileEndless/go-httptools)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org/)
 
 A robust HTTP request/response parser and editor for Go. Parse raw HTTP messages with fault tolerance, preserve exact formatting, and edit messages like Burp Suite.
@@ -10,14 +10,16 @@ A robust HTTP request/response parser and editor for Go. Parse raw HTTP messages
 - **Fault-tolerant parsing** of raw HTTP requests and responses
 - **Header order preservation** for exact reconstruction
 - **Non-standard header support** (`test:deneme`, malformed headers)
-- **Automatic decompression** (gzip, deflate, brotli)
+- **Automatic decompression** (gzip, deflate, brotli, zstd) with magic byte detection
 - **Automatic chunked encoding decoding** (opt-in)
-- **BuildOptions system** for flexible output control (NEW in v1.3.0)
-- **HTTP/2 format support** with pseudo-headers (NEW in v1.3.0)
-- **Search functionality** for requests/responses (NEW in v1.3.0)
+- **BuildOptions system** for flexible output control
+- **HTTP/2 format support** with pseudo-headers
+- **Search functionality** for requests/responses
+- **Zstd (Zstandard) compression support** (NEW in v1.3.2)
+- **Magic byte detection** for automatic compression identification (NEW in v1.3.2)
 - **Parse → Edit → Rebuild** pipeline
 - **Exact format preservation** (spacing, line endings, formatting)
-- **Zero external dependencies** (except brotli for compression)
+- **Minimal external dependencies** (brotli and zstd compression libraries only)
 
 ## Quick Start
 
@@ -112,7 +114,7 @@ if resp.IsChunked() {
 
 // Build with full options
 opts := request.BuildOptions{
-    Compression:            request.CompressionGzip,  // None, Keep, Gzip, Deflate, Brotli
+    Compression:            request.CompressionGzip,  // None, Keep, Gzip, Deflate, Brotli, Zstd
     Chunked:                request.ChunkedRemove,    // Keep, Remove, Apply
     HTTPVersion:            request.HTTPVersion2,     // Keep, HTTP/1.1, HTTP/2
     UpdateContentLength:    true,
@@ -238,19 +240,38 @@ modified := editor.
 rebuilt := modified.Build()
 ```
 
-## Search Functionality (NEW in v1.3.0)
+## Search Functionality
 
 ```go
 import "github.com/WhileEndless/go-httptools/pkg/search"
 
 // Search in request
-results := search.SearchRequest(req, "token")
-for _, r := range results {
-    fmt.Printf("Found in %s: %s\n", r.Location, r.Context)
+results, _ := req.Search("token", search.DefaultOptions())
+for _, r := range results.Results {
+    fmt.Printf("Found in %s at position %d\n", r.Location, r.Position)
 }
 
-// Search in response
-results := search.SearchResponse(resp, "error")
+// Search only in headers or body
+headerResults, _ := req.SearchHeaders("Authorization", true)  // case-insensitive
+bodyResults, _ := req.SearchBody("password", false)
+
+// Quick contains check
+if req.Contains("secret", true) {
+    fmt.Println("Found sensitive data!")
+}
+
+// Regex search
+results, _ := req.SearchRegex(`Bearer\s+[\w-]+`)
+
+// Search in response (same API)
+results, _ := resp.Search("error", search.DefaultOptions())
+if resp.Contains("404", false) {
+    fmt.Println("Not found response")
+}
+
+// Replace in body
+count, _ := req.ReplaceInBody("old_token", "new_token", search.DefaultOptions())
+fmt.Printf("Replaced %d occurrences\n", count)
 ```
 
 ## API Overview
@@ -265,8 +286,15 @@ results := search.SearchResponse(resp, "error")
 - `req.BuildNormalized()` - Build normalized HTTP/1.1 (NEW)
 - `req.BuildDecompressed()` - Build with decompressed body (NEW)
 - `req.BuildDechunked()` - Build without chunked encoding (NEW)
-- `req.IsCompressed()` - Check if body is compressed (NEW)
-- `req.IsChunked()` - Check if body is chunked (NEW)
+- `req.IsCompressed()` - Check if body is compressed
+- `req.IsChunked()` - Check if body is chunked
+- `req.Search(pattern, opts)` - Search in request
+- `req.SearchHeaders(pattern, caseInsensitive)` - Search only in headers
+- `req.SearchBody(pattern, caseInsensitive)` - Search only in body
+- `req.SearchRegex(pattern)` - Search using regex
+- `req.Contains(pattern, caseInsensitive)` - Quick contains check
+- `req.ContainsRegex(pattern)` - Regex contains check
+- `req.ReplaceInBody(pattern, replacement, opts)` - Replace in body
 
 ### Response Package
 - `response.Parse([]byte)` - Parse with automatic decompression
@@ -277,8 +305,15 @@ results := search.SearchResponse(resp, "error")
 - `resp.BuildNormalized()` - Build normalized HTTP/1.1 (NEW)
 - `resp.BuildDecompressed()` - Rebuild with decompressed body
 - `resp.BuildDechunked()` - Build without chunked encoding (NEW)
-- `resp.IsCompressed()` - Check if body is compressed (NEW)
-- `resp.IsChunked()` - Check if body is chunked (NEW)
+- `resp.IsCompressed()` - Check if body is compressed
+- `resp.IsChunked()` - Check if body is chunked
+- `resp.Search(pattern, opts)` - Search in response
+- `resp.SearchHeaders(pattern, caseInsensitive)` - Search only in headers
+- `resp.SearchBody(pattern, caseInsensitive)` - Search only in body
+- `resp.SearchRegex(pattern)` - Search using regex
+- `resp.Contains(pattern, caseInsensitive)` - Quick contains check
+- `resp.ContainsRegex(pattern)` - Regex contains check
+- `resp.ReplaceInBody(pattern, replacement, opts)` - Replace in body
 
 #### Chunked Transfer Encoding
 
@@ -310,7 +345,7 @@ resp, _ := response.ParseWithOptions(chunkedResponse, opts)
 ```go
 type BuildOptions struct {
     // Compression: CompressionKeep, CompressionNone, CompressionGzip,
-    //              CompressionDeflate, CompressionBrotli
+    //              CompressionDeflate, CompressionBrotli, CompressionZstd
     Compression CompressionMethod
 
     // Chunked: ChunkedKeep, ChunkedRemove, ChunkedApply
@@ -352,9 +387,23 @@ opts := request.HTTP2Options()            // HTTP/2 format
 - `ValidateRequest()` / `ValidateResponse()` - Validation with warnings
 - Standard library conversion utilities
 
-### Search Package (NEW in v1.3.0)
-- `search.SearchRequest(req, query)` - Search in request
-- `search.SearchResponse(resp, query)` - Search in response
+### Search Package
+- `search.SearchOptions` - Options for searching (Pattern, UseRegex, CaseInsensitive, etc.)
+- `search.DefaultOptions()` - Default search options
+- `search.SearchInHeaders` / `search.SearchInBody` - Location flags
+- Search methods are available directly on Request and Response objects
+
+### Compression Package (NEW in v1.3.2)
+- `compression.DetectCompression(encoding)` - Detect from Content-Encoding header
+- `compression.DetectByMagicBytes(data)` - Detect from magic bytes
+- `compression.Compress(data, compressionType)` - Compress data
+- `compression.CompressWithLevel(data, compressionType, level)` - Compress with level
+- `compression.Decompress(data, compressionType)` - Decompress data
+- `compression.DecompressAuto(data)` - Auto-detect and decompress
+- `compression.IsSupported(encoding)` - Check if encoding is supported
+- `compression.GetSupportedEncodings()` - Get list of supported encodings
+- Supported types: `gzip`, `deflate`, `br` (brotli), `zstd`, `identity`
+- Also supports aliases: `x-gzip`, `x-deflate`, `zstandard`
 
 ## Examples
 
@@ -399,13 +448,23 @@ import (
 )
 
 func main() {
-    fmt.Println("HTTPTools version:", version.GetVersion()) // Output: 1.3.1
+    fmt.Println("HTTPTools version:", version.GetVersion()) // Output: 1.3.2
 }
 ```
 
-Current version: **1.3.1**
+Current version: **1.3.2**
 
 ### Changelog
+
+**v1.3.2**
+- Add Zstd (Zstandard) compression support
+- Add magic byte detection for automatic compression identification
+- Add `DetectedCompression` field to Request and Response
+- Add `CompressWithLevel()` for compression level control
+- Add `DecompressAuto()` for auto-detecting and decompressing
+- Add `IsSupported()` and `GetSupportedEncodings()` helper functions
+- Support compression aliases: `x-gzip`, `x-deflate`, `zstandard`
+- Parser now uses magic byte detection as fallback when headers are missing
 
 **v1.3.1**
 - Remove redundant `BuildHTTP2()` in favor of `BuildAsHTTP2()`
@@ -438,7 +497,8 @@ Current version: **1.3.1**
 ## Dependencies
 
 - **Go 1.21+**
-- **github.com/andybalholm/brotli** (for Brotli compression support only)
+- **github.com/andybalholm/brotli** (for Brotli compression support)
+- **github.com/klauspost/compress** (for Zstd compression support)
 
-Zero other external dependencies - uses only Go standard library.
+Minimal external dependencies - uses Go standard library for everything else.
 
