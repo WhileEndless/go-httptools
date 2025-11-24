@@ -3,6 +3,7 @@ package request
 import (
 	"strings"
 
+	"github.com/WhileEndless/go-httptools/pkg/compression"
 	"github.com/WhileEndless/go-httptools/pkg/errors"
 	"github.com/WhileEndless/go-httptools/pkg/headers"
 )
@@ -90,16 +91,54 @@ func Parse(data []byte) (*Request, error) {
 	}
 
 	// Read body (everything after headers)
+	var bodyBytes []byte
 	if headerEnd >= 0 && headerEnd < len(data) {
 		separatorLen := getHeaderSeparatorLength(data, headerEnd)
 		bodyStart := headerEnd + separatorLen
 		if bodyStart < len(data) {
-			req.Body = data[bodyStart:]
+			bodyBytes = data[bodyStart:]
 		} else {
-			req.Body = []byte{}
+			bodyBytes = []byte{}
 		}
 	} else {
-		req.Body = []byte{}
+		bodyBytes = []byte{}
+	}
+
+	// Store raw body
+	req.RawBody = bodyBytes
+
+	// Detect compression - first try header, then magic bytes
+	contentEncoding := req.GetContentEncoding()
+	compressionType := compression.CompressionNone
+
+	if contentEncoding != "" {
+		// Try header-based detection first
+		compressionType = compression.DetectCompression(contentEncoding)
+	}
+
+	// If header didn't indicate compression, try magic byte detection
+	if compressionType == compression.CompressionNone && len(bodyBytes) > 0 {
+		compressionType = compression.DetectByMagicBytes(bodyBytes)
+	}
+
+	// Store detected compression type
+	req.DetectedCompression = compressionType
+
+	// Decompress if compression was detected
+	if compressionType != compression.CompressionNone {
+		decompressed, err := compression.Decompress(bodyBytes, compressionType)
+		if err != nil {
+			// On decompression error, keep raw body (fault tolerance)
+			req.Body = bodyBytes
+			req.Compressed = false
+			req.DetectedCompression = compression.CompressionNone
+		} else {
+			req.Body = decompressed
+			req.Compressed = true
+		}
+	} else {
+		req.Body = bodyBytes
+		req.Compressed = false
 	}
 
 	// Auto-parse Transfer-Encoding header

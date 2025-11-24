@@ -23,6 +23,8 @@ const (
 	CompressionDeflate
 	// CompressionBrotli compresses with brotli
 	CompressionBrotli
+	// CompressionZstd compresses with zstd (Zstandard)
+	CompressionZstd
 )
 
 // ChunkedOption represents chunked encoding options for build
@@ -221,6 +223,8 @@ func (r *Request) prepareBody(opts BuildOptions) ([]byte, error) {
 			compType = compression.CompressionDeflate
 		case CompressionBrotli:
 			compType = compression.CompressionBrotli
+		case CompressionZstd:
+			compType = compression.CompressionZstd
 		}
 
 		compressed, err := compression.Compress(body, compType)
@@ -393,12 +397,14 @@ func (r *Request) determineCompression(opts BuildOptions) CompressionMethod {
 	if r.Compressed {
 		ce := r.GetContentEncoding()
 		switch strings.ToLower(ce) {
-		case "gzip":
+		case "gzip", "x-gzip":
 			return CompressionGzip
-		case "deflate":
+		case "deflate", "x-deflate":
 			return CompressionDeflate
-		case "br":
+		case "br", "brotli":
 			return CompressionBrotli
+		case "zstd", "zstandard":
+			return CompressionZstd
 		}
 	}
 	return CompressionNone
@@ -531,6 +537,8 @@ func compressionToString(cm CompressionMethod) string {
 		return "deflate"
 	case CompressionBrotli:
 		return "br"
+	case CompressionZstd:
+		return "zstd"
 	default:
 		return ""
 	}
@@ -576,11 +584,9 @@ func (r *Request) GetContentEncoding() string {
 }
 
 // GetCompressionType returns the compression type of the request
+// Uses DetectedCompression field which is set during parsing (via header or magic bytes)
 func (r *Request) GetCompressionType() compression.CompressionType {
-	if !r.Compressed {
-		return compression.CompressionNone
-	}
-	return compression.DetectCompression(r.GetContentEncoding())
+	return r.DetectedCompression
 }
 
 // BuildNormalized builds a normalized HTTP/1.1 request

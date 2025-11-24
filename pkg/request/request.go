@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/WhileEndless/go-httptools/pkg/chunked"
+	"github.com/WhileEndless/go-httptools/pkg/compression"
 	"github.com/WhileEndless/go-httptools/pkg/cookies"
 	"github.com/WhileEndless/go-httptools/pkg/headers"
 )
@@ -21,8 +22,9 @@ type Request struct {
 	Raw     []byte                  // Original raw request data
 
 	// Body state
-	Compressed    bool // Whether original body was compressed
-	IsBodyChunked bool // Whether body is chunked encoded
+	Compressed          bool                        // Whether original body was compressed
+	DetectedCompression compression.CompressionType // Detected compression type (via header or magic bytes)
+	IsBodyChunked       bool                        // Whether body is chunked encoded
 
 	// Line ending preservation
 	LineSeparator string // Original line separator (\r\n or \n)
@@ -61,6 +63,7 @@ func (r *Request) Clone() *Request {
 	clone.Version = r.Version
 	clone.Path = r.Path
 	clone.Compressed = r.Compressed
+	clone.DetectedCompression = r.DetectedCompression
 	clone.IsBodyChunked = r.IsBodyChunked
 	clone.LineSeparator = r.LineSeparator
 

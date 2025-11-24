@@ -22,6 +22,9 @@ type Response struct {
 	Raw        []byte                  // Original raw response data
 	Compressed bool                    // Whether original body was compressed
 
+	// Compression detection
+	DetectedCompression compression.CompressionType // Detected compression type (via header or magic bytes)
+
 	// Line ending preservation
 	LineSeparator string // Original line separator (\r\n or \n)
 
@@ -50,6 +53,7 @@ func (r *Response) Clone() *Response {
 	clone.StatusCode = r.StatusCode
 	clone.StatusText = r.StatusText
 	clone.Compressed = r.Compressed
+	clone.DetectedCompression = r.DetectedCompression
 	clone.IsBodyChunked = r.IsBodyChunked
 	clone.LineSeparator = r.LineSeparator
 

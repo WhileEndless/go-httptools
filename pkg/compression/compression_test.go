@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 )
 
 // TestDetectCompression verifies compression type detection
@@ -19,13 +20,19 @@ func TestDetectCompression(t *testing.T) {
 		{"gzip lowercase", "gzip", CompressionGzip},
 		{"gzip uppercase", "GZIP", CompressionGzip},
 		{"gzip with spaces", "  gzip  ", CompressionGzip},
+		{"x-gzip alias", "x-gzip", CompressionGzip},
 		{"deflate lowercase", "deflate", CompressionDeflate},
 		{"deflate uppercase", "DEFLATE", CompressionDeflate},
+		{"x-deflate alias", "x-deflate", CompressionDeflate},
 		{"br lowercase", "br", CompressionBrotli},
 		{"br uppercase", "BR", CompressionBrotli},
 		{"brotli full name", "brotli", CompressionBrotli},
 		{"brotli uppercase", "BROTLI", CompressionBrotli},
-		{"unknown encoding", "zstd", CompressionNone},
+		{"zstd lowercase", "zstd", CompressionZstd},
+		{"zstd uppercase", "ZSTD", CompressionZstd},
+		{"zstandard alias", "zstandard", CompressionZstd},
+		{"identity", "identity", CompressionNone},
+		{"unknown encoding", "lz4", CompressionNone},
 		{"empty string", "", CompressionNone},
 	}
 
@@ -138,6 +145,7 @@ func TestDecompress(t *testing.T) {
 		{"gzip", CompressionGzip},
 		{"deflate", CompressionDeflate},
 		{"brotli", CompressionBrotli},
+		{"zstd", CompressionZstd},
 		{"none", CompressionNone},
 	}
 
@@ -256,6 +264,7 @@ func TestCompress(t *testing.T) {
 		{"gzip", CompressionGzip, true},
 		{"deflate", CompressionDeflate, true},
 		{"brotli", CompressionBrotli, true},
+		{"zstd", CompressionZstd, true},
 		{"none", CompressionNone, false},
 	}
 
@@ -301,6 +310,7 @@ func TestRoundTrip(t *testing.T) {
 		{"gzip", CompressionGzip},
 		{"deflate", CompressionDeflate},
 		{"brotli", CompressionBrotli},
+		{"zstd", CompressionZstd},
 	}
 
 	for _, tc := range testCases {
@@ -335,6 +345,7 @@ func TestDecompressEmptyData(t *testing.T) {
 		CompressionGzip,
 		CompressionDeflate,
 		CompressionBrotli,
+		CompressionZstd,
 		CompressionNone,
 	}
 
@@ -357,6 +368,7 @@ func TestCompressEmptyData(t *testing.T) {
 		CompressionGzip,
 		CompressionDeflate,
 		CompressionBrotli,
+		CompressionZstd,
 		CompressionNone,
 	}
 
@@ -382,6 +394,8 @@ func (ct CompressionType) String() string {
 		return "deflate"
 	case CompressionBrotli:
 		return "brotli"
+	case CompressionZstd:
+		return "zstd"
 	case CompressionNone:
 		return "none"
 	default:
@@ -413,5 +427,175 @@ func TestDecompressInvalidBrotli(t *testing.T) {
 	_, err := decompressBrotli(invalidData)
 	if err == nil {
 		t.Error("Expected error for invalid brotli data")
+	}
+}
+
+// TestDecompressZstd verifies zstd decompression
+func TestDecompressZstd(t *testing.T) {
+	original := []byte("Hello, this is a test message for zstd compression!")
+
+	// Compress with zstd
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatalf("Failed to create zstd encoder: %v", err)
+	}
+	compressed := encoder.EncodeAll(original, nil)
+	encoder.Close()
+
+	// Decompress using our function
+	decompressed, err := decompressZstd(compressed)
+	if err != nil {
+		t.Fatalf("decompressZstd failed: %v", err)
+	}
+
+	// Verify
+	if !bytes.Equal(decompressed, original) {
+		t.Errorf("Decompressed data doesn't match original.\nExpected: %s\nGot: %s",
+			string(original), string(decompressed))
+	}
+}
+
+// TestCompressZstd verifies zstd compression
+func TestCompressZstd(t *testing.T) {
+	original := []byte("Hello, this is a test message for zstd compression!")
+
+	// Compress using our function
+	compressed, err := compressZstd(original)
+	if err != nil {
+		t.Fatalf("compressZstd failed: %v", err)
+	}
+
+	// Verify it can be decompressed with zstd library
+	decoder, err := zstd.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatalf("Failed to create zstd decoder: %v", err)
+	}
+	defer decoder.Close()
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(decoder); err != nil {
+		t.Fatalf("Failed to read zstd data: %v", err)
+	}
+
+	// Verify
+	if !bytes.Equal(buf.Bytes(), original) {
+		t.Errorf("Decompressed data doesn't match original.\nExpected: %s\nGot: %s",
+			string(original), string(buf.Bytes()))
+	}
+}
+
+// TestDecompressInvalidZstd verifies error handling for invalid zstd data
+func TestDecompressInvalidZstd(t *testing.T) {
+	invalidData := []byte("this is not valid zstd data")
+	_, err := decompressZstd(invalidData)
+	if err == nil {
+		t.Error("Expected error for invalid zstd data")
+	}
+}
+
+// TestDetectByMagicBytes verifies magic byte detection
+func TestDetectByMagicBytes(t *testing.T) {
+	// Create compressed data for each type
+	original := []byte("Test data for magic byte detection")
+
+	tests := []struct {
+		name     string
+		getData  func() []byte
+		expected CompressionType
+	}{
+		{
+			name: "gzip magic bytes",
+			getData: func() []byte {
+				var buf bytes.Buffer
+				w := gzip.NewWriter(&buf)
+				w.Write(original)
+				w.Close()
+				return buf.Bytes()
+			},
+			expected: CompressionGzip,
+		},
+		{
+			name: "zstd magic bytes",
+			getData: func() []byte {
+				encoder, _ := zstd.NewWriter(nil)
+				defer encoder.Close()
+				return encoder.EncodeAll(original, nil)
+			},
+			expected: CompressionZstd,
+		},
+		{
+			name:     "uncompressed data",
+			getData:  func() []byte { return []byte("plain text data") },
+			expected: CompressionNone,
+		},
+		{
+			name:     "empty data",
+			getData:  func() []byte { return []byte{} },
+			expected: CompressionNone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := tt.getData()
+			result := DetectByMagicBytes(data)
+			if result != tt.expected {
+				t.Errorf("DetectByMagicBytes() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsSupported verifies supported encoding check
+func TestIsSupported(t *testing.T) {
+	tests := []struct {
+		encoding  string
+		supported bool
+	}{
+		{"gzip", true},
+		{"x-gzip", true},
+		{"deflate", true},
+		{"x-deflate", true},
+		{"br", true},
+		{"brotli", true},
+		{"zstd", true},
+		{"zstandard", true},
+		{"identity", true},
+		{"", true},
+		{"lz4", false},
+		{"snappy", false},
+		{"unknown", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.encoding, func(t *testing.T) {
+			result := IsSupported(tt.encoding)
+			if result != tt.supported {
+				t.Errorf("IsSupported(%q) = %v, expected %v", tt.encoding, result, tt.supported)
+			}
+		})
+	}
+}
+
+// TestCompressionTypeToString verifies string conversion
+func TestCompressionTypeToString(t *testing.T) {
+	tests := []struct {
+		ct       CompressionType
+		expected string
+	}{
+		{CompressionGzip, "gzip"},
+		{CompressionDeflate, "deflate"},
+		{CompressionBrotli, "br"},
+		{CompressionZstd, "zstd"},
+		{CompressionNone, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			result := CompressionTypeToString(tt.ct)
+			if result != tt.expected {
+				t.Errorf("CompressionTypeToString(%v) = %q, expected %q", tt.ct, result, tt.expected)
+			}
+		})
 	}
 }

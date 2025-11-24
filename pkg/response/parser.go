@@ -133,23 +133,34 @@ func ParseWithOptions(data []byte, opts ParseOptions) (*Response, error) {
 	// Store raw body and attempt decompression
 	resp.RawBody = bodyBytes
 
-	// Detect and handle compression
+	// Detect compression - first try header, then magic bytes
 	contentEncoding := resp.GetContentEncoding()
+	compressionType := compression.CompressionNone
+
 	if contentEncoding != "" {
-		compressionType := compression.DetectCompression(contentEncoding)
-		if compressionType != compression.CompressionNone {
-			decompressed, err := compression.Decompress(bodyBytes, compressionType)
-			if err != nil {
-				// On decompression error, keep raw body (fault tolerance)
-				resp.Body = bodyBytes
-				resp.Compressed = false
-			} else {
-				resp.Body = decompressed
-				resp.Compressed = true
-			}
-		} else {
+		// Try header-based detection first
+		compressionType = compression.DetectCompression(contentEncoding)
+	}
+
+	// If header didn't indicate compression, try magic byte detection
+	if compressionType == compression.CompressionNone && len(bodyBytes) > 0 {
+		compressionType = compression.DetectByMagicBytes(bodyBytes)
+	}
+
+	// Store detected compression type
+	resp.DetectedCompression = compressionType
+
+	// Decompress if compression was detected
+	if compressionType != compression.CompressionNone {
+		decompressed, err := compression.Decompress(bodyBytes, compressionType)
+		if err != nil {
+			// On decompression error, keep raw body (fault tolerance)
 			resp.Body = bodyBytes
 			resp.Compressed = false
+			resp.DetectedCompression = compression.CompressionNone
+		} else {
+			resp.Body = decompressed
+			resp.Compressed = true
 		}
 	} else {
 		resp.Body = bodyBytes
