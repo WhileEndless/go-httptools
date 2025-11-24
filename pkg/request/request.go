@@ -16,16 +16,19 @@ type Request struct {
 	URL     string                  // Request URL/path (full URL with query string)
 	Version string                  // HTTP version (HTTP/1.1, HTTP/2, etc.)
 	Headers *headers.OrderedHeaders // Headers with preserved order
-	Body    []byte                  // Request body
+	Body    []byte                  // Request body (decompressed if was compressed)
+	RawBody []byte                  // Original body (if chunked/compressed)
 	Raw     []byte                  // Original raw request data
+
+	// Body state
+	Compressed    bool // Whether original body was compressed
+	IsBodyChunked bool // Whether body is chunked encoded
 
 	// Line ending preservation
 	LineSeparator string // Original line separator (\r\n or \n)
 
 	// Transfer encoding
 	TransferEncoding []string // Parsed from Transfer-Encoding header
-	RawBody          []byte   // Original body (if chunked encoded)
-	IsBodyChunked    bool     // Whether body is chunked encoded
 
 	// Query parameters
 	Path        string     // URL path without query string
@@ -57,6 +60,7 @@ func (r *Request) Clone() *Request {
 	clone.URL = r.URL
 	clone.Version = r.Version
 	clone.Path = r.Path
+	clone.Compressed = r.Compressed
 	clone.IsBodyChunked = r.IsBodyChunked
 	clone.LineSeparator = r.LineSeparator
 
