@@ -19,6 +19,9 @@ type Request struct {
 	Body    []byte                  // Request body
 	Raw     []byte                  // Original raw request data
 
+	// Line ending preservation
+	LineSeparator string // Original line separator (\r\n or \n)
+
 	// Transfer encoding
 	TransferEncoding []string // Parsed from Transfer-Encoding header
 	RawBody          []byte   // Original body (if chunked encoded)
@@ -39,6 +42,7 @@ type Request struct {
 func NewRequest() *Request {
 	return &Request{
 		Headers:          headers.NewOrderedHeaders(),
+		LineSeparator:    "\r\n", // Default to CRLF
 		TransferEncoding: []string{},
 		QueryParams:      url.Values{},
 		Cookies:          []cookies.Cookie{},
@@ -54,6 +58,7 @@ func (r *Request) Clone() *Request {
 	clone.Version = r.Version
 	clone.Path = r.Path
 	clone.IsBodyChunked = r.IsBodyChunked
+	clone.LineSeparator = r.LineSeparator
 
 	clone.Body = make([]byte, len(r.Body))
 	copy(clone.Body, r.Body)

@@ -1,8 +1,6 @@
 package request
 
 import (
-	"bufio"
-	"bytes"
 	"strings"
 
 	"github.com/WhileEndless/go-httptools/pkg/errors"
@@ -10,6 +8,7 @@ import (
 )
 
 // Parse parses raw HTTP request data with fault tolerance
+// Preserves original header formatting and line endings
 func Parse(data []byte) (*Request, error) {
 	if len(data) == 0 {
 		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
@@ -20,34 +19,70 @@ func Parse(data []byte) (*Request, error) {
 	req.Raw = make([]byte, len(data))
 	copy(req.Raw, data)
 
-	// Split request into lines
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	if !scanner.Scan() {
+	// Find first line ending to extract request line and detect line separator
+	requestLineEnd := 0
+	for requestLineEnd < len(data) && data[requestLineEnd] != '\n' && data[requestLineEnd] != '\r' {
+		requestLineEnd++
+	}
+
+	if requestLineEnd == 0 {
 		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
 			"no request line found", "parse", data)
 	}
 
+	// Detect line separator from first line
+	if requestLineEnd < len(data) {
+		if data[requestLineEnd] == '\r' && requestLineEnd+1 < len(data) && data[requestLineEnd+1] == '\n' {
+			req.LineSeparator = "\r\n"
+		} else if data[requestLineEnd] == '\n' {
+			req.LineSeparator = "\n"
+		} else if data[requestLineEnd] == '\r' {
+			req.LineSeparator = "\r"
+		}
+	}
+
 	// Parse request line (Method URL Version)
-	requestLine := scanner.Text()
+	requestLine := string(data[:requestLineEnd])
 	if err := req.parseRequestLine(requestLine); err != nil {
 		return nil, err
 	}
 
-	// Parse headers
-	headerData := &bytes.Buffer{}
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(strings.TrimSpace(line)) == 0 {
-			break // End of headers
-		}
-		headerData.WriteString(line)
-		headerData.WriteString("\r\n")
+	// Skip past request line and its line ending
+	headerStart := requestLineEnd
+	if headerStart < len(data) && data[headerStart] == '\r' {
+		headerStart++
+	}
+	if headerStart < len(data) && data[headerStart] == '\n' {
+		headerStart++
 	}
 
-	if headerData.Len() > 0 {
-		parsedHeaders, err := headers.ParseHeaders(headerData.Bytes())
+	// Find header section end
+	headerEnd := findHeaderEndIndex(data)
+	if headerEnd < 0 {
+		headerEnd = len(data)
+	}
+
+	// Calculate header data end position (include last line ending)
+	// findHeaderEndIndex returns the start of \r\n\r\n or \n\n
+	// We need to include the first \r\n or \n (the last header's line ending)
+	headerDataEnd := headerEnd
+	if headerEnd < len(data) {
+		// Include the last header's line ending
+		if data[headerEnd] == '\r' {
+			headerDataEnd++
+			if headerDataEnd < len(data) && data[headerDataEnd] == '\n' {
+				headerDataEnd++
+			}
+		} else if data[headerEnd] == '\n' {
+			headerDataEnd++
+		}
+	}
+
+	// Extract header section with original line endings preserved
+	if headerStart < headerDataEnd {
+		headerData := data[headerStart:headerDataEnd]
+		parsedHeaders, err := headers.ParseHeaders(headerData)
 		if err != nil {
-			// Continue with empty headers on parse error (fault tolerance)
 			req.Headers = headers.NewOrderedHeaders()
 		} else {
 			req.Headers = parsedHeaders
@@ -55,18 +90,15 @@ func Parse(data []byte) (*Request, error) {
 	}
 
 	// Read body (everything after headers)
-	// Use direct byte slicing instead of Scanner to avoid 64KB limitation
-	headerEnd := findHeaderEndIndex(data)
-	if headerEnd >= 0 {
+	if headerEnd >= 0 && headerEnd < len(data) {
 		separatorLen := getHeaderSeparatorLength(data, headerEnd)
-		bodyStart := headerEnd + separatorLen // Skip past separator
+		bodyStart := headerEnd + separatorLen
 		if bodyStart < len(data) {
 			req.Body = data[bodyStart:]
 		} else {
 			req.Body = []byte{}
 		}
 	} else {
-		// No header end marker found, no body present
 		req.Body = []byte{}
 	}
 

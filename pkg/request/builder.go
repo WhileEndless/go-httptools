@@ -6,8 +6,15 @@ import (
 )
 
 // Build reconstructs the HTTP request from parsed components
+// Preserves original line endings when available
 func (r *Request) Build() []byte {
 	var buf bytes.Buffer
+
+	// Use original line separator or default to CRLF
+	lineSep := r.LineSeparator
+	if lineSep == "" {
+		lineSep = "\r\n"
+	}
 
 	// Request line
 	buf.WriteString(r.Method)
@@ -15,14 +22,21 @@ func (r *Request) Build() []byte {
 	buf.WriteString(r.URL)
 	buf.WriteString(" ")
 	buf.WriteString(r.Version)
-	buf.WriteString("\r\n")
+	buf.WriteString(lineSep)
 
-	// Headers (in preserved order)
+	// Headers (in preserved order with original formatting)
 	headerBytes := r.Headers.Build()
 	buf.Write(headerBytes)
 
-	// Empty line between headers and body
-	buf.WriteString("\r\n")
+	// Empty line between headers and body (use same separator as headers)
+	// Check if last header has a specific line ending, otherwise use lineSep
+	allHeaders := r.Headers.All()
+	if len(allHeaders) > 0 && allHeaders[len(allHeaders)-1].LineEnding != "" {
+		// Use the same line ending as the last header for the blank line
+		buf.WriteString(allHeaders[len(allHeaders)-1].LineEnding)
+	} else {
+		buf.WriteString(lineSep)
+	}
 
 	// Body
 	if len(r.Body) > 0 {

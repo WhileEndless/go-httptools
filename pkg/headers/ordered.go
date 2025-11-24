@@ -7,10 +7,12 @@ import (
 
 // OrderedHeaders preserves the order of HTTP headers and handles case-insensitive lookups
 type OrderedHeaders struct {
-	mu     sync.RWMutex
-	order  []string          // Preserves insertion order
-	values map[string]string // Case-insensitive storage (lowercase keys)
-	raw    map[string]string // Preserves original case of keys
+	mu            sync.RWMutex
+	order         []string            // Preserves insertion order
+	values        map[string]string   // Case-insensitive storage (lowercase keys)
+	raw           map[string]string   // Preserves original case of keys
+	originalLines map[string]string   // Preserves original line format (e.g., "Host:  example.com  ")
+	lineEndings   map[string]string   // Preserves original line endings (e.g., "\r\n", "\n")
 }
 
 // HeaderEntry represents a single header name-value pair
@@ -22,13 +24,16 @@ type HeaderEntry struct {
 // NewOrderedHeaders creates a new OrderedHeaders instance
 func NewOrderedHeaders() *OrderedHeaders {
 	return &OrderedHeaders{
-		order:  make([]string, 0),
-		values: make(map[string]string),
-		raw:    make(map[string]string),
+		order:         make([]string, 0),
+		values:        make(map[string]string),
+		raw:           make(map[string]string),
+		originalLines: make(map[string]string),
+		lineEndings:   make(map[string]string),
 	}
 }
 
 // Set adds or updates a header, preserving order and case
+// Note: This clears any original line formatting. Use SetWithOriginal to preserve formatting.
 func (h *OrderedHeaders) Set(name, value string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -42,6 +47,27 @@ func (h *OrderedHeaders) Set(name, value string) {
 
 	h.values[lowerName] = value
 	h.raw[lowerName] = name // Preserve original case
+	// Clear original line since value is being set programmatically
+	delete(h.originalLines, lowerName)
+	delete(h.lineEndings, lowerName)
+}
+
+// SetWithOriginal adds or updates a header while preserving the original line format
+func (h *OrderedHeaders) SetWithOriginal(name, value, originalLine, lineEnding string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	lowerName := strings.ToLower(name)
+
+	// If header doesn't exist, add to order
+	if _, exists := h.values[lowerName]; !exists {
+		h.order = append(h.order, lowerName)
+	}
+
+	h.values[lowerName] = value
+	h.raw[lowerName] = name
+	h.originalLines[lowerName] = originalLine
+	h.lineEndings[lowerName] = lineEnding
 }
 
 // SetAfter adds or updates a header, placing it after the specified header
@@ -56,6 +82,8 @@ func (h *OrderedHeaders) SetAfter(name, value, afterHeader string) {
 	if _, exists := h.values[lowerName]; exists {
 		h.values[lowerName] = value
 		h.raw[lowerName] = name
+		delete(h.originalLines, lowerName)
+		delete(h.lineEndings, lowerName)
 		return
 	}
 
@@ -86,6 +114,8 @@ func (h *OrderedHeaders) SetBefore(name, value, beforeHeader string) {
 	if _, exists := h.values[lowerName]; exists {
 		h.values[lowerName] = value
 		h.raw[lowerName] = name
+		delete(h.originalLines, lowerName)
+		delete(h.lineEndings, lowerName)
 		return
 	}
 
@@ -115,6 +145,8 @@ func (h *OrderedHeaders) SetAt(name, value string, index int) {
 	if _, exists := h.values[lowerName]; exists {
 		h.values[lowerName] = value
 		h.raw[lowerName] = name
+		delete(h.originalLines, lowerName)
+		delete(h.lineEndings, lowerName)
 		return
 	}
 
@@ -164,6 +196,8 @@ func (h *OrderedHeaders) Del(name string) {
 	if _, exists := h.values[lowerName]; exists {
 		delete(h.values, lowerName)
 		delete(h.raw, lowerName)
+		delete(h.originalLines, lowerName)
+		delete(h.lineEndings, lowerName)
 
 		// Remove from order
 		for i, headerName := range h.order {
@@ -185,6 +219,8 @@ func (h *OrderedHeaders) DelAll(name string) {
 	// Remove from maps
 	delete(h.values, lowerName)
 	delete(h.raw, lowerName)
+	delete(h.originalLines, lowerName)
+	delete(h.lineEndings, lowerName)
 
 	// Remove all occurrences from order
 	newOrder := make([]string, 0, len(h.order))
@@ -219,8 +255,10 @@ func (h *OrderedHeaders) All() []Header {
 	headers := make([]Header, 0, len(h.order))
 	for _, lowerName := range h.order {
 		headers = append(headers, Header{
-			Name:  h.raw[lowerName],
-			Value: h.values[lowerName],
+			Name:         h.raw[lowerName],
+			Value:        h.values[lowerName],
+			OriginalLine: h.originalLines[lowerName],
+			LineEnding:   h.lineEndings[lowerName],
 		})
 	}
 	return headers
@@ -236,6 +274,8 @@ func (h *OrderedHeaders) Len() int {
 
 // Header represents a single HTTP header
 type Header struct {
-	Name  string
-	Value string
+	Name         string
+	Value        string
+	OriginalLine string // Original line as parsed (e.g., "Host:  example.com  ")
+	LineEnding   string // Original line ending (e.g., "\r\n", "\n", "\r\r\n")
 }

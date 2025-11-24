@@ -165,3 +165,248 @@ func TestOrderedHeaders_Concurrent(t *testing.T) {
 		t.Error("Concurrent access failed")
 	}
 }
+
+// ==================== FORMAT PRESERVATION TESTS ====================
+
+func TestOrderedHeaders_PreserveOriginalFormat_DoubleSpace(t *testing.T) {
+	// Test: "Host:  example.com  " (double space after colon and trailing)
+	headerData := []byte("Host:  example.com  \r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// Get should return trimmed value
+	if got := h.Get("Host"); got != "example.com" {
+		t.Errorf("Get() expected 'example.com', got '%s'", got)
+	}
+
+	// Build should preserve original format
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Format not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_PreserveOriginalFormat_NoSpaceAfterColon(t *testing.T) {
+	// Test: "X-Custom:value" (no space after colon)
+	headerData := []byte("X-Custom:value\r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if got := h.Get("X-Custom"); got != "value" {
+		t.Errorf("Get() expected 'value', got '%s'", got)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Format not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_PreserveOriginalFormat_TabAfterColon(t *testing.T) {
+	// Test: "X-Tab:\tvalue" (tab after colon)
+	headerData := []byte("X-Tab:\tvalue\r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if got := h.Get("X-Tab"); got != "value" {
+		t.Errorf("Get() expected 'value', got '%s'", got)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Format not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_PreserveOriginalFormat_MultipleSpaces(t *testing.T) {
+	// Test: "X-Spaced:   spaced   " (multiple spaces)
+	headerData := []byte("X-Spaced:   spaced   \r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if got := h.Get("X-Spaced"); got != "spaced" {
+		t.Errorf("Get() expected 'spaced', got '%s'", got)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Format not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_PreserveLineEnding_LF(t *testing.T) {
+	// Test: Line ending with just \n
+	headerData := []byte("Host: example.com\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Line ending not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_PreserveLineEnding_CRLF(t *testing.T) {
+	// Test: Line ending with \r\n
+	headerData := []byte("Host: example.com\r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Line ending not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_PreserveLineEnding_DoubleCR(t *testing.T) {
+	// Test: Line ending with \r\r\n (edge case)
+	headerData := []byte("Host: example.com\r\r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Line ending not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_PreserveLineEnding_OnlyCR(t *testing.T) {
+	// Test: Line ending with just \r (old Mac style)
+	headerData := []byte("Host: example.com\rUser-Agent: test\r")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Line ending not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_PreserveMultipleHeaders(t *testing.T) {
+	// Test multiple headers with different formats
+	headerData := []byte("Host:  example.com  \r\nX-Custom:value\nX-Tab:\tvalue\r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Multiple header format not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_ProgrammaticAdditionUsesStandardFormat(t *testing.T) {
+	// Headers added programmatically should use standard format
+	h := headers.NewOrderedHeaders()
+	h.Set("X-New", "value")
+
+	built := h.Build()
+	expected := "X-New: value\r\n"
+	if string(built) != expected {
+		t.Errorf("Expected standard format %q, got %q", expected, built)
+	}
+}
+
+func TestOrderedHeaders_SetClearsOriginalFormat(t *testing.T) {
+	// When Set() is called on a parsed header, original format should be cleared
+	headerData := []byte("Host:  example.com  \r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// Update the header programmatically
+	h.Set("Host", "newhost.com")
+
+	built := h.Build()
+	expected := "Host: newhost.com\r\n"
+	if string(built) != expected {
+		t.Errorf("Expected standard format after Set(): %q, got %q", expected, built)
+	}
+}
+
+func TestOrderedHeaders_MixedParsedAndProgrammatic(t *testing.T) {
+	// Mix of parsed (preserved) and programmatic (standard) headers
+	headerData := []byte("Host:  example.com  \r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// Add a new header programmatically
+	h.Set("X-New", "value")
+
+	built := h.Build()
+	expected := "Host:  example.com  \r\nX-New: value\r\n"
+	if string(built) != expected {
+		t.Errorf("Mixed format not correct:\nExpected: %q\nGot: %q", expected, built)
+	}
+}
+
+func TestOrderedHeaders_BuildNormalized(t *testing.T) {
+	// BuildNormalized should always use standard format
+	headerData := []byte("Host:  example.com  \r\nX-Custom:value\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	built := h.BuildNormalized()
+	expected := "Host: example.com\r\nX-Custom: value\r\n"
+	if string(built) != expected {
+		t.Errorf("BuildNormalized failed:\nExpected: %q\nGot: %q", expected, built)
+	}
+}
+
+func TestOrderedHeaders_EmptyValue(t *testing.T) {
+	// Test header with empty value
+	headerData := []byte("X-Empty:\r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if got := h.Get("X-Empty"); got != "" {
+		t.Errorf("Get() expected empty string, got '%s'", got)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Empty value header not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
+
+func TestOrderedHeaders_SpaceInValue(t *testing.T) {
+	// Test value with internal spaces (should be preserved)
+	headerData := []byte("X-Sentence: Hello World Test\r\n")
+	h, err := headers.ParseHeaders(headerData)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if got := h.Get("X-Sentence"); got != "Hello World Test" {
+		t.Errorf("Get() expected 'Hello World Test', got '%s'", got)
+	}
+
+	built := h.Build()
+	if string(built) != string(headerData) {
+		t.Errorf("Internal spaces not preserved:\nExpected: %q\nGot: %q", headerData, built)
+	}
+}
