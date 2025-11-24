@@ -37,6 +37,20 @@ func DetectCompression(contentEncoding string) CompressionType {
 	}
 }
 
+// CompressionTypeToString converts a CompressionType to its Content-Encoding string
+func CompressionTypeToString(ct CompressionType) string {
+	switch ct {
+	case CompressionGzip:
+		return "gzip"
+	case CompressionDeflate:
+		return "deflate"
+	case CompressionBrotli:
+		return "br"
+	default:
+		return ""
+	}
+}
+
 // Decompress decompresses data based on the compression type
 func Decompress(data []byte, compressionType CompressionType) ([]byte, error) {
 	if len(data) == 0 {
