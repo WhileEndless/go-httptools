@@ -1,10 +1,12 @@
 package request
 
 import (
+	"bufio"
 	"io"
 	"strings"
 
 	"github.com/WhileEndless/go-httptools/pkg/compression"
+	"github.com/WhileEndless/go-httptools/pkg/cookies"
 	"github.com/WhileEndless/go-httptools/pkg/errors"
 	"github.com/WhileEndless/go-httptools/pkg/headers"
 )
@@ -25,6 +27,95 @@ func ParseReader(r io.Reader) (*Request, error) {
 			"failed to read from reader: "+err.Error(), "parseReader", nil)
 	}
 	return parse(data)
+}
+
+// ParseHeadersFromReader parses only the HTTP request headers from an io.Reader
+// Returns the parsed Request (without body) and an io.Reader for the remaining body data
+// This is useful for streaming large requests where the body shouldn't be loaded into memory
+//
+// Usage example:
+//
+//	req, bodyReader, err := request.ParseHeadersFromReader(conn)
+//	if err != nil {
+//	    return err
+//	}
+//	// Headers are now available in req
+//	fmt.Println(req.Method, req.URL)
+//	// Body can be streamed separately
+//	io.Copy(outputFile, bodyReader)
+func ParseHeadersFromReader(r io.Reader) (*Request, io.Reader, error) {
+	br := bufio.NewReader(r)
+
+	req := NewRequest()
+
+	// Read request line
+	requestLine, err := br.ReadString('\n')
+	if err != nil {
+		return nil, nil, errors.NewError(errors.ErrorTypeInvalidFormat,
+			"failed to read request line: "+err.Error(), "parseHeadersFromReader", nil)
+	}
+
+	// Detect line separator
+	if strings.HasSuffix(requestLine, "\r\n") {
+		req.LineSeparator = "\r\n"
+		requestLine = strings.TrimSuffix(requestLine, "\r\n")
+	} else {
+		req.LineSeparator = "\n"
+		requestLine = strings.TrimSuffix(requestLine, "\n")
+	}
+
+	// Parse request line
+	if err := req.parseRequestLine(requestLine); err != nil {
+		return nil, nil, err
+	}
+
+	// Read headers until empty line
+	var headerLines []string
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, nil, errors.NewError(errors.ErrorTypeInvalidFormat,
+				"failed to read header line: "+err.Error(), "parseHeadersFromReader", nil)
+		}
+
+		// Check for end of headers (empty line)
+		trimmed := strings.TrimRight(line, "\r\n")
+		if trimmed == "" {
+			break
+		}
+
+		headerLines = append(headerLines, line)
+
+		if err == io.EOF {
+			break
+		}
+	}
+
+	// Parse headers
+	if len(headerLines) > 0 {
+		headerData := []byte(strings.Join(headerLines, ""))
+		parsedHeaders, err := headers.ParseHeaders(headerData)
+		if err != nil {
+			req.Headers = headers.NewOrderedHeaders()
+		} else {
+			req.Headers = parsedHeaders
+		}
+	}
+
+	// Parse Transfer-Encoding
+	req.parseTransferEncoding()
+
+	// Parse query parameters from URL
+	req.ParseQueryParams()
+
+	// Parse cookies from Cookie header
+	cookieHeader := strings.TrimSpace(req.Headers.Get("Cookie"))
+	if cookieHeader != "" {
+		req.Cookies = cookies.ParseCookies(cookieHeader)
+	}
+
+	// Return the request and the remaining reader (body)
+	return req, br, nil
 }
 
 // parse is the internal implementation for parsing HTTP request data

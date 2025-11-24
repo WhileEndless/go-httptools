@@ -2,6 +2,7 @@ package request
 
 import (
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 
@@ -354,4 +355,89 @@ func (r *Request) UpdateCookieHeader() {
 
 	cookieHeader := cookies.BuildCookieHeader(r.Cookies)
 	r.Headers.Set("Cookie", cookieHeader)
+}
+
+// GetContentEncoding returns the Content-Encoding header value (trimmed)
+func (r *Request) GetContentEncoding() string {
+	return strings.TrimSpace(r.Headers.Get("Content-Encoding"))
+}
+
+// ============================================================================
+// Streaming Support (io.Writer)
+// ============================================================================
+
+// WriteTo implements io.WriterTo interface for streaming large requests
+// Writes the complete HTTP request (request line + headers + body) to the writer
+// Returns the number of bytes written and any error encountered
+func (r *Request) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+
+	// Write headers first
+	n, err := r.WriteHeadersTo(w)
+	total += n
+	if err != nil {
+		return total, err
+	}
+
+	// Write body
+	if len(r.Body) > 0 {
+		written, err := w.Write(r.Body)
+		total += int64(written)
+		if err != nil {
+			return total, err
+		}
+	}
+
+	return total, nil
+}
+
+// WriteHeadersTo writes only the request line and headers to the writer
+// This is useful for streaming large bodies separately
+// Returns the number of bytes written and any error encountered
+func (r *Request) WriteHeadersTo(w io.Writer) (int64, error) {
+	var total int64
+
+	// Build request line
+	requestLine := fmt.Sprintf("%s %s %s%s", r.Method, r.URL, r.Version, r.LineSeparator)
+	n, err := w.Write([]byte(requestLine))
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	// Write headers
+	headerBytes := r.Headers.Build()
+	n, err = w.Write(headerBytes)
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	// Write header-body separator
+	n, err = w.Write([]byte(r.LineSeparator))
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	return total, nil
+}
+
+// WriteBodyTo writes only the body to the writer
+// This is useful when headers have already been written
+// Returns the number of bytes written and any error encountered
+func (r *Request) WriteBodyTo(w io.Writer) (int64, error) {
+	if len(r.Body) == 0 {
+		return 0, nil
+	}
+	n, err := w.Write(r.Body)
+	return int64(n), err
+}
+
+// CopyBodyFrom reads from the provided reader and writes to the writer
+// This is useful for streaming large bodies without loading into memory
+// The body is NOT stored in the Request struct
+// Returns the number of bytes copied and any error encountered
+func (r *Request) CopyBodyFrom(src io.Reader, dst io.Writer) (int64, error) {
+	return io.Copy(dst, src)
 }

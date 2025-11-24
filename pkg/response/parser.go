@@ -1,6 +1,7 @@
 package response
 
 import (
+	"bufio"
 	"bytes"
 	"io"
 	"strconv"
@@ -47,6 +48,100 @@ func ParseReaderWithOptions(r io.Reader, opts ParseOptions) (*Response, error) {
 			"failed to read from reader: "+err.Error(), "parseReader", nil)
 	}
 	return ParseWithOptions(data, opts)
+}
+
+// ParseHeadersFromReader parses only the HTTP response headers from an io.Reader
+// Returns the parsed Response (without body) and an io.Reader for the remaining body data
+// This is useful for streaming large responses where the body shouldn't be loaded into memory
+//
+// Usage example:
+//
+//	resp, bodyReader, err := response.ParseHeadersFromReader(conn)
+//	if err != nil {
+//	    return err
+//	}
+//	// Headers are now available in resp
+//	fmt.Println(resp.StatusCode)
+//	// Body can be streamed separately
+//	io.Copy(outputFile, bodyReader)
+func ParseHeadersFromReader(r io.Reader) (*Response, io.Reader, error) {
+	return ParseHeadersFromReaderWithOptions(r, ParseOptions{})
+}
+
+// ParseHeadersFromReaderWithOptions parses only the HTTP response headers from an io.Reader with options
+// Returns the parsed Response (without body) and an io.Reader for the remaining body data
+func ParseHeadersFromReaderWithOptions(r io.Reader, opts ParseOptions) (*Response, io.Reader, error) {
+	br := bufio.NewReader(r)
+
+	resp := NewResponse()
+
+	// Read status line
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		return nil, nil, errors.NewError(errors.ErrorTypeInvalidFormat,
+			"failed to read status line: "+err.Error(), "parseHeadersFromReader", nil)
+	}
+
+	// Detect line separator
+	if strings.HasSuffix(statusLine, "\r\n") {
+		resp.LineSeparator = "\r\n"
+		statusLine = strings.TrimSuffix(statusLine, "\r\n")
+	} else {
+		resp.LineSeparator = "\n"
+		statusLine = strings.TrimSuffix(statusLine, "\n")
+	}
+
+	// Parse status line
+	if err := resp.parseStatusLine(statusLine); err != nil {
+		return nil, nil, err
+	}
+
+	// Read headers until empty line
+	var headerLines []string
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, nil, errors.NewError(errors.ErrorTypeInvalidFormat,
+				"failed to read header line: "+err.Error(), "parseHeadersFromReader", nil)
+		}
+
+		// Check for end of headers (empty line)
+		trimmed := strings.TrimRight(line, "\r\n")
+		if trimmed == "" {
+			break
+		}
+
+		headerLines = append(headerLines, line)
+
+		if err == io.EOF {
+			break
+		}
+	}
+
+	// Parse headers
+	if len(headerLines) > 0 {
+		headerData := []byte(strings.Join(headerLines, ""))
+		parsedHeaders, err := headers.ParseHeaders(headerData)
+		if err != nil {
+			resp.Headers = headers.NewOrderedHeaders()
+		} else {
+			resp.Headers = parsedHeaders
+		}
+	}
+
+	// Extract Set-Cookie headers
+	for _, header := range resp.Headers.All() {
+		if strings.ToLower(header.Name) == "set-cookie" {
+			cookie := cookies.ParseSetCookie(header.Value)
+			resp.SetCookies = append(resp.SetCookies, cookie)
+		}
+	}
+
+	// Parse Transfer-Encoding
+	resp.parseTransferEncoding()
+
+	// Return the response and the remaining reader (body)
+	return resp, br, nil
 }
 
 // ParseWithOptions parses raw HTTP response data with custom options

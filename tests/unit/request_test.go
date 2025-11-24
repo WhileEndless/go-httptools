@@ -463,7 +463,7 @@ func TestRequestParseReader_WithBody(t *testing.T) {
 Host: example.com
 Content-Type: application/json
 
-{"username":"admin","password":"secret"}`)
+{"username":"admin","password":"pass"}`)
 
 	reader := bytes.NewReader(raw)
 	req, err := request.ParseReader(reader)
@@ -471,9 +471,164 @@ Content-Type: application/json
 		t.Fatalf("ParseReader failed: %v", err)
 	}
 
-	expectedBody := `{"username":"admin","password":"secret"}`
+	expectedBody := `{"username":"admin","password":"pass"}`
 	if string(req.Body) != expectedBody {
 		t.Errorf("Expected body '%s', got '%s'", expectedBody, string(req.Body))
+	}
+}
+
+// ============================================================================
+// Streaming Support Tests (ParseHeadersFromReader, WriteTo)
+// ============================================================================
+
+func TestRequestParseHeadersFromReader_Basic(t *testing.T) {
+	raw := "POST /api/upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 1000\r\n\r\ntest body data"
+
+	reader := bytes.NewReader([]byte(raw))
+	req, bodyReader, err := request.ParseHeadersFromReader(reader)
+	if err != nil {
+		t.Fatalf("ParseHeadersFromReader failed: %v", err)
+	}
+
+	// Check headers are parsed
+	if req.Method != "POST" {
+		t.Errorf("Expected method POST, got %s", req.Method)
+	}
+
+	if req.URL != "/api/upload" {
+		t.Errorf("Expected URL /api/upload, got %s", req.URL)
+	}
+
+	if req.GetHost() != "example.com" {
+		t.Errorf("Expected Host example.com, got %s", req.GetHost())
+	}
+
+	// Check body is NOT read yet (should be in bodyReader)
+	if len(req.Body) != 0 {
+		t.Errorf("Expected empty body in request, got %d bytes", len(req.Body))
+	}
+
+	// Read body from bodyReader
+	bodyData, err := io.ReadAll(bodyReader)
+	if err != nil {
+		t.Fatalf("Failed to read body: %v", err)
+	}
+
+	expectedBody := "test body data"
+	if string(bodyData) != expectedBody {
+		t.Errorf("Expected body '%s', got '%s'", expectedBody, string(bodyData))
+	}
+}
+
+func TestRequestWriteTo_Basic(t *testing.T) {
+	req := request.NewRequest()
+	req.Method = "POST"
+	req.URL = "/api/data"
+	req.Version = "HTTP/1.1"
+	req.LineSeparator = "\r\n"
+	req.Headers.Set("Host", "example.com")
+	req.Headers.Set("Content-Type", "application/json")
+	req.Body = []byte(`{"test":"data"}`)
+
+	var buf bytes.Buffer
+	n, err := req.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	if n != int64(buf.Len()) {
+		t.Errorf("Bytes written mismatch: returned %d, actual %d", n, buf.Len())
+	}
+
+	// Verify the output can be parsed back
+	parsed, err := request.Parse(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Failed to parse written request: %v", err)
+	}
+
+	if parsed.Method != "POST" {
+		t.Errorf("Expected method POST, got %s", parsed.Method)
+	}
+
+	if parsed.URL != "/api/data" {
+		t.Errorf("Expected URL /api/data, got %s", parsed.URL)
+	}
+
+	if string(parsed.Body) != `{"test":"data"}` {
+		t.Errorf("Body mismatch after WriteTo")
+	}
+}
+
+func TestRequestWriteHeadersTo_Basic(t *testing.T) {
+	req := request.NewRequest()
+	req.Method = "GET"
+	req.URL = "/test"
+	req.Version = "HTTP/1.1"
+	req.LineSeparator = "\r\n"
+	req.Headers.Set("Host", "example.com")
+
+	var buf bytes.Buffer
+	n, err := req.WriteHeadersTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteHeadersTo failed: %v", err)
+	}
+
+	if n != int64(buf.Len()) {
+		t.Errorf("Bytes written mismatch")
+	}
+
+	output := buf.String()
+	if !bytes.HasPrefix(buf.Bytes(), []byte("GET /test HTTP/1.1\r\n")) {
+		t.Errorf("Request line not correct: %s", output)
+	}
+
+	if !bytes.Contains(buf.Bytes(), []byte("Host: example.com")) {
+		t.Errorf("Host header missing")
+	}
+}
+
+func TestRequestStreamingRoundTrip(t *testing.T) {
+	// Create a request, write it to a buffer, then parse headers from it
+	originalReq := request.NewRequest()
+	originalReq.Method = "PUT"
+	originalReq.URL = "/api/file"
+	originalReq.Version = "HTTP/1.1"
+	originalReq.LineSeparator = "\r\n"
+	originalReq.Headers.Set("Host", "example.com")
+	originalReq.Headers.Set("Content-Type", "application/octet-stream")
+	originalReq.Headers.Set("Content-Length", "50")
+	originalReq.Body = bytes.Repeat([]byte("B"), 50)
+
+	// Write to buffer
+	var buf bytes.Buffer
+	_, err := originalReq.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	// Parse headers from buffer
+	parsedReq, bodyReader, err := request.ParseHeadersFromReader(&buf)
+	if err != nil {
+		t.Fatalf("ParseHeadersFromReader failed: %v", err)
+	}
+
+	// Verify headers
+	if parsedReq.Method != originalReq.Method {
+		t.Errorf("Method mismatch: expected %s, got %s", originalReq.Method, parsedReq.Method)
+	}
+
+	if parsedReq.URL != originalReq.URL {
+		t.Errorf("URL mismatch: expected %s, got %s", originalReq.URL, parsedReq.URL)
+	}
+
+	if parsedReq.GetHost() != "example.com" {
+		t.Errorf("Host mismatch")
+	}
+
+	// Stream body
+	bodyData, _ := io.ReadAll(bodyReader)
+	if len(bodyData) != 50 {
+		t.Errorf("Body length mismatch: expected 50, got %d", len(bodyData))
 	}
 }
 

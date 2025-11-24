@@ -2,6 +2,7 @@ package response
 
 import (
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -284,4 +285,84 @@ func (r *Response) UpdateSetCookieHeaders() {
 		setCookieValue := cookie.Build()
 		r.Headers.Add("Set-Cookie", setCookieValue)
 	}
+}
+
+// ============================================================================
+// Streaming Support (io.Writer)
+// ============================================================================
+
+// WriteTo implements io.WriterTo interface for streaming large responses
+// Writes the complete HTTP response (status line + headers + body) to the writer
+// Returns the number of bytes written and any error encountered
+func (r *Response) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+
+	// Write headers first
+	n, err := r.WriteHeadersTo(w)
+	total += n
+	if err != nil {
+		return total, err
+	}
+
+	// Write body
+	if len(r.Body) > 0 {
+		written, err := w.Write(r.Body)
+		total += int64(written)
+		if err != nil {
+			return total, err
+		}
+	}
+
+	return total, nil
+}
+
+// WriteHeadersTo writes only the status line and headers to the writer
+// This is useful for streaming large bodies separately
+// Returns the number of bytes written and any error encountered
+func (r *Response) WriteHeadersTo(w io.Writer) (int64, error) {
+	var total int64
+
+	// Build status line
+	statusLine := fmt.Sprintf("%s %d %s%s", r.Version, r.StatusCode, r.StatusText, r.LineSeparator)
+	n, err := w.Write([]byte(statusLine))
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	// Write headers
+	headerBytes := r.Headers.Build()
+	n, err = w.Write(headerBytes)
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	// Write header-body separator
+	n, err = w.Write([]byte(r.LineSeparator))
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	return total, nil
+}
+
+// WriteBodyTo writes only the body to the writer
+// This is useful when headers have already been written
+// Returns the number of bytes written and any error encountered
+func (r *Response) WriteBodyTo(w io.Writer) (int64, error) {
+	if len(r.Body) == 0 {
+		return 0, nil
+	}
+	n, err := w.Write(r.Body)
+	return int64(n), err
+}
+
+// CopyBodyFrom reads from the provided reader and writes to the writer
+// This is useful for streaming large bodies without loading into memory
+// The body is NOT stored in the Response struct
+// Returns the number of bytes copied and any error encountered
+func (r *Response) CopyBodyFrom(src io.Reader, dst io.Writer) (int64, error) {
+	return io.Copy(dst, src)
 }

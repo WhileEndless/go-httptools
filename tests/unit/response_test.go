@@ -1062,3 +1062,172 @@ func TestResponseParseReader_GzipCompressed(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// Streaming Support Tests (ParseHeadersFromReader, WriteTo)
+// ============================================================================
+
+func TestResponseParseHeadersFromReader_Basic(t *testing.T) {
+	raw := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 21\r\n\r\n{\"message\":\"success\"}"
+
+	reader := strings.NewReader(raw)
+	resp, bodyReader, err := response.ParseHeadersFromReader(reader)
+	if err != nil {
+		t.Fatalf("ParseHeadersFromReader failed: %v", err)
+	}
+
+	// Check headers are parsed
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	if resp.GetContentType() != "application/json" {
+		t.Errorf("Expected Content-Type application/json, got %s", resp.GetContentType())
+	}
+
+	// Check body is NOT read yet (should be in bodyReader)
+	if len(resp.Body) != 0 {
+		t.Errorf("Expected empty body in response, got %d bytes", len(resp.Body))
+	}
+
+	// Read body from bodyReader
+	bodyData, err := io.ReadAll(bodyReader)
+	if err != nil {
+		t.Fatalf("Failed to read body: %v", err)
+	}
+
+	expectedBody := `{"message":"success"}`
+	if string(bodyData) != expectedBody {
+		t.Errorf("Expected body '%s', got '%s'", expectedBody, string(bodyData))
+	}
+}
+
+func TestResponseParseHeadersFromReader_LargeBodySimulation(t *testing.T) {
+	// Simulate a large body scenario
+	headerPart := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 1000000\r\n\r\n"
+	bodyPart := strings.Repeat("X", 1000) // Simulate part of a large body
+
+	reader := strings.NewReader(headerPart + bodyPart)
+	resp, bodyReader, err := response.ParseHeadersFromReader(reader)
+	if err != nil {
+		t.Fatalf("ParseHeadersFromReader failed: %v", err)
+	}
+
+	// Headers should be parsed
+	if resp.GetContentLength() != 1000000 {
+		t.Errorf("Expected Content-Length 1000000, got %d", resp.GetContentLength())
+	}
+
+	// Body should be streamable
+	bodyData, err := io.ReadAll(bodyReader)
+	if err != nil {
+		t.Fatalf("Failed to read body: %v", err)
+	}
+
+	if len(bodyData) != 1000 {
+		t.Errorf("Expected 1000 bytes, got %d", len(bodyData))
+	}
+}
+
+func TestResponseWriteTo_Basic(t *testing.T) {
+	resp := response.NewResponse()
+	resp.Version = "HTTP/1.1"
+	resp.StatusCode = 200
+	resp.StatusText = "OK"
+	resp.LineSeparator = "\r\n"
+	resp.Headers.Set("Content-Type", "application/json")
+	resp.Body = []byte(`{"test":"data"}`)
+
+	var buf bytes.Buffer
+	n, err := resp.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	if n != int64(buf.Len()) {
+		t.Errorf("Bytes written mismatch: returned %d, actual %d", n, buf.Len())
+	}
+
+	// Verify the output can be parsed back
+	parsed, err := response.Parse(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Failed to parse written response: %v", err)
+	}
+
+	if parsed.StatusCode != 200 {
+		t.Errorf("Expected status 200, got %d", parsed.StatusCode)
+	}
+
+	if string(parsed.Body) != `{"test":"data"}` {
+		t.Errorf("Body mismatch after WriteTo")
+	}
+}
+
+func TestResponseWriteHeadersTo_Basic(t *testing.T) {
+	resp := response.NewResponse()
+	resp.Version = "HTTP/1.1"
+	resp.StatusCode = 200
+	resp.StatusText = "OK"
+	resp.LineSeparator = "\r\n"
+	resp.Headers.Set("Content-Type", "text/plain")
+	resp.Headers.Set("Content-Length", "5")
+
+	var buf bytes.Buffer
+	n, err := resp.WriteHeadersTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteHeadersTo failed: %v", err)
+	}
+
+	if n != int64(buf.Len()) {
+		t.Errorf("Bytes written mismatch")
+	}
+
+	output := buf.String()
+	if !strings.HasPrefix(output, "HTTP/1.1 200 OK\r\n") {
+		t.Errorf("Status line not correct: %s", output)
+	}
+
+	if !strings.Contains(output, "Content-Type: text/plain") {
+		t.Errorf("Content-Type header missing")
+	}
+}
+
+func TestResponseStreamingRoundTrip(t *testing.T) {
+	// Create a response, write it to a buffer, then parse headers from it
+	originalResp := response.NewResponse()
+	originalResp.Version = "HTTP/1.1"
+	originalResp.StatusCode = 200
+	originalResp.StatusText = "OK"
+	originalResp.LineSeparator = "\r\n"
+	originalResp.Headers.Set("Content-Type", "application/octet-stream")
+	originalResp.Headers.Set("Content-Length", "100")
+	originalResp.Body = bytes.Repeat([]byte("A"), 100)
+
+	// Write to buffer
+	var buf bytes.Buffer
+	_, err := originalResp.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	// Parse headers from buffer
+	parsedResp, bodyReader, err := response.ParseHeadersFromReader(&buf)
+	if err != nil {
+		t.Fatalf("ParseHeadersFromReader failed: %v", err)
+	}
+
+	// Verify headers
+	if parsedResp.StatusCode != originalResp.StatusCode {
+		t.Errorf("Status code mismatch")
+	}
+
+	if parsedResp.GetContentType() != "application/octet-stream" {
+		t.Errorf("Content-Type mismatch")
+	}
+
+	// Stream body
+	bodyData, _ := io.ReadAll(bodyReader)
+	if len(bodyData) != 100 {
+		t.Errorf("Body length mismatch: expected 100, got %d", len(bodyData))
+	}
+}
+
