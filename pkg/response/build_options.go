@@ -600,3 +600,10 @@ func (r *Response) BuildDechunked() ([]byte, error) {
 	opts.Chunked = ChunkedRemove
 	return r.BuildWithOptions(opts)
 }
+
+// BuildDecompressed builds with body decompressed
+func (r *Response) BuildDecompressed() ([]byte, error) {
+	opts := DefaultBuildOptions()
+	opts.Compression = CompressionNone
+	return r.BuildWithOptions(opts)
+}

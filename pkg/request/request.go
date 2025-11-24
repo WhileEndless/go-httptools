@@ -286,42 +286,6 @@ func (r *Request) SetPseudoHeader(name, value string) {
 	r.PseudoHeaders[name] = value
 }
 
-// BuildHTTP2 builds HTTP/2 format request
-// Pseudo-headers come first, then regular headers
-func (r *Request) BuildHTTP2() []byte {
-	var result strings.Builder
-
-	// Write pseudo-headers first (in specific order)
-	pseudoOrder := []string{":method", ":scheme", ":authority", ":path"}
-	for _, name := range pseudoOrder {
-		if value, ok := r.PseudoHeaders[name]; ok {
-			result.WriteString(fmt.Sprintf("%s: %s\r\n", name, value))
-		}
-	}
-
-	// Write any other pseudo-headers
-	for name, value := range r.PseudoHeaders {
-		if name != ":method" && name != ":scheme" && name != ":authority" && name != ":path" {
-			result.WriteString(fmt.Sprintf("%s: %s\r\n", name, value))
-		}
-	}
-
-	// Write regular headers
-	for _, header := range r.Headers.All() {
-		result.WriteString(fmt.Sprintf("%s: %s\r\n", header.Name, header.Value))
-	}
-
-	// Blank line separating headers from body
-	result.WriteString("\r\n")
-
-	// Add body if present
-	if len(r.Body) > 0 {
-		result.Write(r.Body)
-	}
-
-	return []byte(result.String())
-}
-
 // ============================================================================
 // Cookies
 // ============================================================================

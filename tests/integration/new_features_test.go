@@ -347,14 +347,17 @@ func TestPseudoHeaders_Parsing(t *testing.T) {
 
 func TestPseudoHeaders_Build(t *testing.T) {
 	req := request.NewRequest()
-	req.SetPseudoHeader(":method", "POST")
-	req.SetPseudoHeader(":path", "/api/data")
-	req.SetPseudoHeader(":scheme", "https")
-	req.SetPseudoHeader(":authority", "api.example.com")
+	req.Method = "POST"
+	req.URL = "/api/data"
+	req.Version = "HTTP/2"
+	req.Headers.Set("Host", "api.example.com")
 	req.Headers.Set("Content-Type", "application/json")
 	req.Body = []byte(`{"key":"value"}`)
 
-	http2Data := req.BuildHTTP2()
+	http2Data, err := req.BuildAsHTTP2()
+	if err != nil {
+		t.Fatalf("BuildAsHTTP2() error: %v", err)
+	}
 
 	// Check that pseudo-headers come first
 	http2Str := string(http2Data)
@@ -371,6 +374,11 @@ func TestPseudoHeaders_Build(t *testing.T) {
 
 	if methodPos > contentTypePos {
 		t.Error("Expected pseudo-headers before regular headers")
+	}
+
+	// Check :authority is generated from Host
+	if !contains(http2Str, ":authority: api.example.com") {
+		t.Error("Expected :authority generated from Host header")
 	}
 
 	// Check body present
