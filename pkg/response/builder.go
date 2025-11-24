@@ -7,9 +7,16 @@ import (
 )
 
 // Build reconstructs the HTTP response from parsed components
+// Preserves original line endings when available
 // Uses RawBody (potentially compressed) for accurate reconstruction
 func (r *Response) Build() []byte {
 	var buf bytes.Buffer
+
+	// Use original line separator or default to CRLF
+	lineSep := r.LineSeparator
+	if lineSep == "" {
+		lineSep = "\r\n"
+	}
 
 	// Status line
 	buf.WriteString(r.Version)
@@ -17,14 +24,19 @@ func (r *Response) Build() []byte {
 	buf.WriteString(fmt.Sprintf("%d", r.StatusCode))
 	buf.WriteString(" ")
 	buf.WriteString(r.StatusText)
-	buf.WriteString("\r\n")
+	buf.WriteString(lineSep)
 
-	// Headers (in preserved order)
+	// Headers (in preserved order with original formatting)
 	headerBytes := r.Headers.Build()
 	buf.Write(headerBytes)
 
-	// Empty line between headers and body
-	buf.WriteString("\r\n")
+	// Empty line between headers and body (use same separator as headers)
+	allHeaders := r.Headers.All()
+	if len(allHeaders) > 0 && allHeaders[len(allHeaders)-1].LineEnding != "" {
+		buf.WriteString(allHeaders[len(allHeaders)-1].LineEnding)
+	} else {
+		buf.WriteString(lineSep)
+	}
 
 	// Body (use RawBody to maintain compression if it was originally compressed)
 	if len(r.RawBody) > 0 {

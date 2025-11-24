@@ -1,7 +1,6 @@
 package response
 
 import (
-	"bufio"
 	"bytes"
 	"strconv"
 	"strings"
@@ -32,6 +31,7 @@ func Parse(data []byte) (*Response, error) {
 }
 
 // ParseWithOptions parses raw HTTP response data with custom options
+// Preserves original header formatting and line endings
 func ParseWithOptions(data []byte, opts ParseOptions) (*Response, error) {
 	if len(data) == 0 {
 		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
@@ -42,57 +42,75 @@ func ParseWithOptions(data []byte, opts ParseOptions) (*Response, error) {
 	resp.Raw = make([]byte, len(data))
 	copy(resp.Raw, data)
 
+	// Find first line ending to extract status line and detect line separator
+	statusLineEnd := 0
+	for statusLineEnd < len(data) && data[statusLineEnd] != '\n' && data[statusLineEnd] != '\r' {
+		statusLineEnd++
+	}
+
+	if statusLineEnd == 0 {
+		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
+			"no status line found", "parse", data)
+	}
+
+	// Detect line separator from first line
+	if statusLineEnd < len(data) {
+		if data[statusLineEnd] == '\r' && statusLineEnd+1 < len(data) && data[statusLineEnd+1] == '\n' {
+			resp.LineSeparator = "\r\n"
+		} else if data[statusLineEnd] == '\n' {
+			resp.LineSeparator = "\n"
+		} else if data[statusLineEnd] == '\r' {
+			resp.LineSeparator = "\r"
+		}
+	}
+
+	// Parse status line (Version StatusCode StatusText)
+	statusLine := string(data[:statusLineEnd])
+	if err := resp.parseStatusLine(statusLine); err != nil {
+		return nil, err
+	}
+
+	// Skip past status line and its line ending
+	headerStart := statusLineEnd
+	if headerStart < len(data) && data[headerStart] == '\r' {
+		headerStart++
+	}
+	if headerStart < len(data) && data[headerStart] == '\n' {
+		headerStart++
+	}
+
 	// Find the end of headers (double line break)
-	headerEndIdx := findHeaderEnd(data)
+	headerEndIdx := findHeaderEndIndex(data)
 	if headerEndIdx == -1 {
 		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
 			"no header end found", "parse", data)
 	}
 
-	headerSection := data[:headerEndIdx]
-	bodyBytes := data[headerEndIdx:]
-
-	// Parse status line and headers from header section
-	scanner := bufio.NewScanner(bytes.NewReader(headerSection))
-	if !scanner.Scan() {
-		return nil, errors.NewError(errors.ErrorTypeInvalidFormat,
-			"no status line found", "parse", data)
-	}
-
-	// Parse status line (Version StatusCode StatusText)
-	statusLine := scanner.Text()
-	if err := resp.parseStatusLine(statusLine); err != nil {
-		return nil, err
-	}
-
-	// Parse headers - handle Set-Cookie separately for multi-value support
-	headerData := &bytes.Buffer{}
-	setCookieHeaders := []string{}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(strings.TrimSpace(line)) == 0 {
-			break // End of headers
-		}
-
-		// Check if this is a Set-Cookie header
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "set-cookie:") {
-			// Extract value
-			colonPos := strings.Index(line, ":")
-			if colonPos != -1 {
-				value := strings.TrimSpace(line[colonPos+1:])
-				setCookieHeaders = append(setCookieHeaders, value)
+	// Calculate header data end position (include last line ending)
+	headerDataEnd := headerEndIdx
+	if headerEndIdx < len(data) {
+		if data[headerEndIdx] == '\r' {
+			headerDataEnd++
+			if headerDataEnd < len(data) && data[headerDataEnd] == '\n' {
+				headerDataEnd++
 			}
+		} else if data[headerEndIdx] == '\n' {
+			headerDataEnd++
 		}
-
-		headerData.WriteString(line)
-		headerData.WriteString("\r\n")
 	}
 
-	if headerData.Len() > 0 {
-		parsedHeaders, err := headers.ParseHeaders(headerData.Bytes())
+	// Extract Set-Cookie headers before parsing (for multi-value support)
+	setCookieHeaders := []string{}
+	if headerStart < headerDataEnd {
+		headerSection := data[headerStart:headerDataEnd]
+		setCookieHeaders = extractSetCookieHeaders(headerSection)
+	}
+
+	// Parse headers with original formatting preserved
+	if headerStart < headerDataEnd {
+		headerData := data[headerStart:headerDataEnd]
+		parsedHeaders, err := headers.ParseHeaders(headerData)
 		if err != nil {
-			// Continue with empty headers on parse error (fault tolerance)
 			resp.Headers = headers.NewOrderedHeaders()
 		} else {
 			resp.Headers = parsedHeaders
@@ -104,6 +122,13 @@ func ParseWithOptions(data []byte, opts ParseOptions) (*Response, error) {
 		cookie := cookies.ParseSetCookie(setCookieValue)
 		resp.SetCookies = append(resp.SetCookies, cookie)
 	}
+
+	// Get body bytes
+	bodyStart := findHeaderEnd(data)
+	if bodyStart == -1 {
+		bodyStart = len(data)
+	}
+	bodyBytes := data[bodyStart:]
 
 	// Store raw body and attempt decompression
 	resp.RawBody = bodyBytes
@@ -289,4 +314,62 @@ func findHeaderEnd(data []byte) int {
 	}
 
 	return -1
+}
+
+// findHeaderEndIndex finds the start of the header-body separator
+// Returns the index of the first \r or \n of \r\n\r\n or \n\n
+func findHeaderEndIndex(data []byte) int {
+	// Try CRLF first (\r\n\r\n)
+	idx := bytes.Index(data, []byte("\r\n\r\n"))
+	if idx != -1 {
+		return idx
+	}
+
+	// Try Unix line endings (\n\n)
+	idx = bytes.Index(data, []byte("\n\n"))
+	if idx != -1 {
+		return idx
+	}
+
+	return -1
+}
+
+// extractSetCookieHeaders extracts Set-Cookie header values from header section
+func extractSetCookieHeaders(headerData []byte) []string {
+	var setCookies []string
+
+	i := 0
+	for i < len(headerData) {
+		// Find end of current line
+		lineStart := i
+		lineEnd := i
+		for lineEnd < len(headerData) && headerData[lineEnd] != '\n' && headerData[lineEnd] != '\r' {
+			lineEnd++
+		}
+
+		line := string(headerData[lineStart:lineEnd])
+
+		// Check if this is a Set-Cookie header (case-insensitive)
+		if len(line) > 11 {
+			lowerLine := strings.ToLower(line)
+			if strings.HasPrefix(lowerLine, "set-cookie:") {
+				colonPos := strings.Index(line, ":")
+				if colonPos != -1 {
+					value := strings.TrimSpace(line[colonPos+1:])
+					setCookies = append(setCookies, value)
+				}
+			}
+		}
+
+		// Skip past line ending
+		if lineEnd < len(headerData) && headerData[lineEnd] == '\r' {
+			lineEnd++
+		}
+		if lineEnd < len(headerData) && headerData[lineEnd] == '\n' {
+			lineEnd++
+		}
+		i = lineEnd
+	}
+
+	return setCookies
 }

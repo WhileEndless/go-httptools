@@ -806,3 +806,137 @@ func TestResponseParse_HTMLWithBrotli(t *testing.T) {
 			string(originalHTML), string(resp.Body))
 	}
 }
+
+
+// ==================== RESPONSE FORMAT PRESERVATION TESTS ====================
+
+func TestResponseParse_PreserveHeaderFormat(t *testing.T) {
+	raw := []byte("HTTP/1.1 200 OK\r\nContent-Type:  application/json  \r\nX-Custom:value\r\n\r\n{\"test\":true}")
+
+	resp, err := response.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Get should return trimmed values
+	if got := resp.Headers.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Get(\"Content-Type\") expected \"application/json\", got \"%s\"", got)
+	}
+
+	if got := resp.Headers.Get("X-Custom"); got != "value" {
+		t.Errorf("Get(\"X-Custom\") expected \"value\", got \"%s\"", got)
+	}
+
+	// Build headers should preserve format
+	headerBytes := resp.Headers.Build()
+	expectedHeaders := "Content-Type:  application/json  \r\nX-Custom:value\r\n"
+	if string(headerBytes) != expectedHeaders {
+		t.Errorf("Header format not preserved:\nExpected: %q\nGot: %q", expectedHeaders, headerBytes)
+	}
+}
+
+func TestResponseParse_PreserveLineEndings(t *testing.T) {
+	// Test LF only line endings
+	raw := []byte("HTTP/1.1 200 OK\nContent-Type: application/json\nServer: test\n\n{\"test\":true}")
+
+	resp, err := response.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	headerBytes := resp.Headers.Build()
+	expectedHeaders := "Content-Type: application/json\nServer: test\n"
+	if string(headerBytes) != expectedHeaders {
+		t.Errorf("LF line endings not preserved:\nExpected: %q\nGot: %q", expectedHeaders, headerBytes)
+	}
+}
+
+func TestResponseParse_MixedLineEndings(t *testing.T) {
+	raw := []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\nX-Custom: value\r\n\r\n")
+
+	resp, err := response.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	headerBytes := resp.Headers.Build()
+	expectedHeaders := "Content-Type: application/json\nX-Custom: value\r\n"
+	if string(headerBytes) != expectedHeaders {
+		t.Errorf("Mixed line endings not preserved:\nExpected: %q\nGot: %q", expectedHeaders, headerBytes)
+	}
+}
+
+func TestResponseBuild_PreservesFormat(t *testing.T) {
+	raw := []byte("HTTP/1.1 200 OK\nContent-Type:  application/json  \nX-Custom:no-space\n\n{\"data\":\"test\"}")
+
+	resp, err := response.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	rebuilt := resp.Build()
+	expected := "HTTP/1.1 200 OK\nContent-Type:  application/json  \nX-Custom:no-space\n\n{\"data\":\"test\"}"
+	if string(rebuilt) != expected {
+		t.Errorf("Response rebuild failed:\nExpected: %q\nGot: %q", expected, rebuilt)
+	}
+}
+
+func TestResponseParse_ModifyHeaderClearsFormat(t *testing.T) {
+	raw := []byte("HTTP/1.1 200 OK\r\nContent-Type:  application/json  \r\n\r\n")
+
+	resp, err := response.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Modify the header
+	resp.Headers.Set("Content-Type", "text/html")
+
+	// Build should use standard format for modified header
+	headerBytes := resp.Headers.Build()
+	expected := "Content-Type: text/html\r\n"
+	if string(headerBytes) != expected {
+		t.Errorf("Modified header should use standard format:\nExpected: %q\nGot: %q", expected, headerBytes)
+	}
+}
+
+func TestResponseParse_ComplexFormatPreservation(t *testing.T) {
+	raw := []byte("HTTP/1.1 200 OK\r\n" +
+		"Content-Type:application/json\r\n" +
+		"Server:  nginx  \r\n" +
+		"X-Tab:\tvalue\r\n" +
+		"X-Empty:\r\n" +
+		"\r\n" +
+		"body content")
+
+	resp, err := response.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Verify parsed values (trimmed)
+	expectations := map[string]string{
+		"Content-Type": "application/json",
+		"Server":       "nginx",
+		"X-Tab":        "value",
+		"X-Empty":      "",
+	}
+
+	for name, expected := range expectations {
+		if got := resp.Headers.Get(name); got != expected {
+			t.Errorf("Get(%s) expected %q, got %q", name, expected, got)
+		}
+	}
+
+	// Verify original format preserved
+	headerBytes := resp.Headers.Build()
+	expectedHeaders := "Content-Type:application/json\r\n" +
+		"Server:  nginx  \r\n" +
+		"X-Tab:\tvalue\r\n" +
+		"X-Empty:\r\n"
+
+	if string(headerBytes) != expectedHeaders {
+		t.Errorf("Complex format not preserved:\nExpected: %q\nGot: %q", expectedHeaders, headerBytes)
+	}
+}
+

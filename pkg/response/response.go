@@ -21,6 +21,9 @@ type Response struct {
 	Raw        []byte                  // Original raw response data
 	Compressed bool                    // Whether original body was compressed
 
+	// Line ending preservation
+	LineSeparator string // Original line separator (\r\n or \n)
+
 	// Transfer encoding
 	TransferEncoding []string // Parsed from Transfer-Encoding header
 	IsBodyChunked    bool     // Whether body is chunked encoded
@@ -33,6 +36,7 @@ type Response struct {
 func NewResponse() *Response {
 	return &Response{
 		Headers:          headers.NewOrderedHeaders(),
+		LineSeparator:    "\r\n", // Default to CRLF
 		TransferEncoding: []string{},
 		SetCookies:       []cookies.ResponseCookie{},
 	}
@@ -46,6 +50,7 @@ func (r *Response) Clone() *Response {
 	clone.StatusText = r.StatusText
 	clone.Compressed = r.Compressed
 	clone.IsBodyChunked = r.IsBodyChunked
+	clone.LineSeparator = r.LineSeparator
 
 	clone.Body = make([]byte, len(r.Body))
 	copy(clone.Body, r.Body)
