@@ -544,3 +544,408 @@ func TestHeaderList_JSONSerialization(t *testing.T) {
 		t.Errorf("Expected 2 headers after unmarshal, got %d", h2.Len())
 	}
 }
+
+// ==================== HTTP/2 RAW PARSING TESTS ====================
+
+func TestHTTP2Parse_HTTPStyleFormat(t *testing.T) {
+	// Test HTTP/1.1-style format with HTTP/2 version
+	raw := []byte("GET /api/test HTTP/2\r\nHost: example.com\r\nAccept: application/json\r\nUser-Agent: test-client\r\n\r\n")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if req.Method != "GET" {
+		t.Errorf("Method not parsed correctly: expected 'GET', got '%s'", req.Method)
+	}
+
+	if req.Path != "/api/test" {
+		t.Errorf("Path not parsed correctly: expected '/api/test', got '%s'", req.Path)
+	}
+
+	if req.Authority != "example.com" {
+		t.Errorf("Authority not set from Host header: expected 'example.com', got '%s'", req.Authority)
+	}
+
+	if req.Scheme != "https" {
+		t.Errorf("Scheme should default to 'https': got '%s'", req.Scheme)
+	}
+
+	if req.Headers.Get("Accept") != "application/json" {
+		t.Errorf("Accept header not parsed: got '%s'", req.Headers.Get("Accept"))
+	}
+
+	if req.Headers.Get("User-Agent") != "test-client" {
+		t.Errorf("User-Agent header not parsed: got '%s'", req.Headers.Get("User-Agent"))
+	}
+}
+
+func TestHTTP2Parse_HTTPStyleFormatWithBody(t *testing.T) {
+	raw := []byte("POST /api/users HTTP/2\r\nHost: api.example.com\r\nContent-Type: application/json\r\n\r\n{\"name\":\"test\"}")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if req.Method != "POST" {
+		t.Errorf("Method not parsed correctly: got '%s'", req.Method)
+	}
+
+	if req.Authority != "api.example.com" {
+		t.Errorf("Authority not parsed correctly: got '%s'", req.Authority)
+	}
+
+	expectedBody := `{"name":"test"}`
+	if string(req.Body) != expectedBody {
+		t.Errorf("Body not parsed correctly: expected '%s', got '%s'", expectedBody, string(req.Body))
+	}
+
+	if req.EndStream {
+		t.Error("EndStream should be false when body is present")
+	}
+}
+
+func TestHTTP2Parse_PseudoHeaderFormat(t *testing.T) {
+	raw := []byte(":method: GET\r\n:scheme: https\r\n:authority: example.com\r\n:path: /api/test\r\naccept: application/json\r\n\r\n")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if req.Method != "GET" {
+		t.Errorf("Method not parsed: expected 'GET', got '%s'", req.Method)
+	}
+
+	if req.Scheme != "https" {
+		t.Errorf("Scheme not parsed: expected 'https', got '%s'", req.Scheme)
+	}
+
+	if req.Authority != "example.com" {
+		t.Errorf("Authority not parsed: expected 'example.com', got '%s'", req.Authority)
+	}
+
+	if req.Path != "/api/test" {
+		t.Errorf("Path not parsed: expected '/api/test', got '%s'", req.Path)
+	}
+
+	if req.Headers.Get("accept") != "application/json" {
+		t.Errorf("Regular header not parsed: got '%s'", req.Headers.Get("accept"))
+	}
+}
+
+func TestHTTP2Parse_PseudoHeaderFormatWithBody(t *testing.T) {
+	raw := []byte(":method: POST\r\n:scheme: https\r\n:authority: api.example.com\r\n:path: /users\r\ncontent-type: application/json\r\n\r\n{\"id\":123}")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if req.Method != "POST" {
+		t.Errorf("Method not parsed: got '%s'", req.Method)
+	}
+
+	expectedBody := `{"id":123}`
+	if string(req.Body) != expectedBody {
+		t.Errorf("Body not parsed: expected '%s', got '%s'", expectedBody, string(req.Body))
+	}
+}
+
+func TestHTTP2Parse_LFLineEndings(t *testing.T) {
+	// Test with LF line endings instead of CRLF
+	raw := []byte("GET /test HTTP/2\nHost: example.com\nAccept: */*\n\nbody content")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed with LF endings: %v", err)
+	}
+
+	if req.Method != "GET" {
+		t.Errorf("Method not parsed with LF: got '%s'", req.Method)
+	}
+
+	if req.Path != "/test" {
+		t.Errorf("Path not parsed with LF: got '%s'", req.Path)
+	}
+
+	if string(req.Body) != "body content" {
+		t.Errorf("Body not parsed with LF: got '%s'", string(req.Body))
+	}
+}
+
+func TestHTTP2Parse_BuildAsHTTP1_Roundtrip(t *testing.T) {
+	// Parse HTTP/2 request and build as HTTP/1.1
+	raw := []byte("GET /api/v1/users HTTP/2\r\nHost: api.example.com\r\nAccept: application/json\r\nAuthorization: Bearer token123\r\n\r\n")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Build as HTTP/1.1
+	http1 := req.BuildAsHTTP1()
+	http1Str := string(http1)
+
+	// Verify HTTP/1.1 format
+	if !strings.HasPrefix(http1Str, "GET /api/v1/users HTTP/1.1") {
+		t.Errorf("BuildAsHTTP1 should produce HTTP/1.1 request line, got: %s", http1Str[:50])
+	}
+
+	if !strings.Contains(http1Str, "Host: api.example.com") {
+		t.Error("BuildAsHTTP1 should contain Host header")
+	}
+
+	if !strings.Contains(http1Str, "Accept: application/json") {
+		t.Error("BuildAsHTTP1 should preserve Accept header")
+	}
+
+	if !strings.Contains(http1Str, "Authorization: Bearer token123") {
+		t.Error("BuildAsHTTP1 should preserve Authorization header")
+	}
+}
+
+func TestHTTP2Parse_BuildHTTP1Style_PreservesVersion(t *testing.T) {
+	raw := []byte("POST /submit HTTP/2\r\nHost: example.com\r\nContent-Type: text/plain\r\n\r\ntest body")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// BuildHTTP1Style should show HTTP/2 in version
+	http2Style := req.BuildHTTP1Style()
+	http2StyleStr := string(http2Style)
+
+	if !strings.HasPrefix(http2StyleStr, "POST /submit HTTP/2") {
+		t.Errorf("BuildHTTP1Style should preserve HTTP/2 version, got: %s", http2StyleStr[:30])
+	}
+}
+
+func TestHTTP2Parse_Build_PseudoHeaders(t *testing.T) {
+	raw := []byte("GET /test HTTP/2\r\nHost: example.com\r\n\r\n")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Build() should output pseudo-header format
+	built := req.Build()
+	builtStr := string(built)
+
+	if !strings.Contains(builtStr, ":method: GET") {
+		t.Error("Build should contain :method pseudo-header")
+	}
+
+	if !strings.Contains(builtStr, ":path: /test") {
+		t.Error("Build should contain :path pseudo-header")
+	}
+
+	if !strings.Contains(builtStr, ":authority: example.com") {
+		t.Error("Build should contain :authority pseudo-header")
+	}
+
+	if !strings.Contains(builtStr, ":scheme: https") {
+		t.Error("Build should contain :scheme pseudo-header")
+	}
+}
+
+func TestHTTP2Parse_SkipsConnectionHeaders(t *testing.T) {
+	raw := []byte("GET /test HTTP/2\r\nHost: example.com\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nTransfer-Encoding: chunked\r\nUpgrade: h2c\r\nProxy-Connection: keep-alive\r\nAccept: */*\r\n\r\n")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Connection-specific headers should be skipped
+	if req.Headers.Has("Connection") {
+		t.Error("Connection header should be skipped")
+	}
+
+	if req.Headers.Has("Keep-Alive") {
+		t.Error("Keep-Alive header should be skipped")
+	}
+
+	if req.Headers.Has("Transfer-Encoding") {
+		t.Error("Transfer-Encoding header should be skipped")
+	}
+
+	if req.Headers.Has("Upgrade") {
+		t.Error("Upgrade header should be skipped")
+	}
+
+	if req.Headers.Has("Proxy-Connection") {
+		t.Error("Proxy-Connection header should be skipped")
+	}
+
+	// Accept should be preserved
+	if !req.Headers.Has("Accept") {
+		t.Error("Accept header should be preserved")
+	}
+}
+
+func TestHTTP2Parse_MissingPseudoHeaders_Error(t *testing.T) {
+	// Missing :method and :path in pseudo-header format
+	raw := []byte(":scheme: https\r\n:authority: example.com\r\n\r\n")
+
+	_, err := http2.Parse(raw)
+	if err == nil {
+		t.Error("Parse should fail when required pseudo-headers are missing")
+	}
+}
+
+func TestHTTP2Parse_NotHTTP2_Error(t *testing.T) {
+	// HTTP/1.1 version should fail
+	raw := []byte("GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n")
+
+	_, err := http2.Parse(raw)
+	if err == nil {
+		t.Error("Parse should fail for HTTP/1.1 requests")
+	}
+}
+
+func TestHTTP2Parse_EmptyData_Error(t *testing.T) {
+	_, err := http2.Parse([]byte{})
+	if err == nil {
+		t.Error("Parse should fail for empty data")
+	}
+}
+
+// ==================== HTTP/2 RESPONSE PARSING TESTS ====================
+
+func TestHTTP2ParseResponse_HTTPStyleFormat(t *testing.T) {
+	raw := []byte("HTTP/2 200 OK\r\nContent-Type: application/json\r\nServer: test-server\r\n\r\n{\"status\":\"ok\"}")
+
+	resp, err := http2.ParseResponse(raw)
+	if err != nil {
+		t.Fatalf("ParseResponse failed: %v", err)
+	}
+
+	if resp.Status != 200 {
+		t.Errorf("Status not parsed correctly: expected 200, got %d", resp.Status)
+	}
+
+	if resp.Headers.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type not parsed: got '%s'", resp.Headers.Get("Content-Type"))
+	}
+
+	if resp.Headers.Get("Server") != "test-server" {
+		t.Errorf("Server header not parsed: got '%s'", resp.Headers.Get("Server"))
+	}
+
+	expectedBody := `{"status":"ok"}`
+	if string(resp.Body) != expectedBody {
+		t.Errorf("Body not parsed: expected '%s', got '%s'", expectedBody, string(resp.Body))
+	}
+}
+
+func TestHTTP2ParseResponse_PseudoHeaderFormat(t *testing.T) {
+	raw := []byte(":status: 201\r\ncontent-type: application/json\r\nlocation: /users/123\r\n\r\n{\"id\":123}")
+
+	resp, err := http2.ParseResponse(raw)
+	if err != nil {
+		t.Fatalf("ParseResponse failed: %v", err)
+	}
+
+	if resp.Status != 201 {
+		t.Errorf("Status not parsed: expected 201, got %d", resp.Status)
+	}
+
+	if resp.Headers.Get("location") != "/users/123" {
+		t.Errorf("Location header not parsed: got '%s'", resp.Headers.Get("location"))
+	}
+
+	expectedBody := `{"id":123}`
+	if string(resp.Body) != expectedBody {
+		t.Errorf("Body not parsed: expected '%s', got '%s'", expectedBody, string(resp.Body))
+	}
+}
+
+func TestHTTP2ParseResponse_BuildAsHTTP1(t *testing.T) {
+	raw := []byte("HTTP/2 404 Not Found\r\nContent-Type: text/html\r\n\r\n<h1>Not Found</h1>")
+
+	resp, err := http2.ParseResponse(raw)
+	if err != nil {
+		t.Fatalf("ParseResponse failed: %v", err)
+	}
+
+	http1 := resp.BuildAsHTTP1()
+	http1Str := string(http1)
+
+	if !strings.HasPrefix(http1Str, "HTTP/1.1 404 Not Found") {
+		t.Errorf("BuildAsHTTP1 should produce HTTP/1.1 status line, got: %s", http1Str[:30])
+	}
+
+	if !strings.Contains(http1Str, "<h1>Not Found</h1>") {
+		t.Error("BuildAsHTTP1 should preserve body")
+	}
+}
+
+func TestHTTP2ParseResponse_MissingStatus_Error(t *testing.T) {
+	// Missing :status in pseudo-header format
+	raw := []byte(":content-type: text/html\r\n\r\n")
+
+	_, err := http2.ParseResponse(raw)
+	if err == nil {
+		t.Error("ParseResponse should fail when :status is missing")
+	}
+}
+
+// ==================== HEADER ORDER PRESERVATION IN PARSING TESTS ====================
+
+func TestHTTP2Parse_PreservesHeaderOrder(t *testing.T) {
+	raw := []byte("GET /test HTTP/2\r\nHost: example.com\r\nFirst: 1\r\nSecond: 2\r\nThird: 3\r\nFourth: 4\r\n\r\n")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	expectedOrder := []string{"First", "Second", "Third", "Fourth"}
+	headers := req.Headers.All()
+
+	if len(headers) != len(expectedOrder) {
+		t.Fatalf("Expected %d headers, got %d", len(expectedOrder), len(headers))
+	}
+
+	for i, expected := range expectedOrder {
+		if headers[i].Name != expected {
+			t.Errorf("Header order not preserved at position %d: expected '%s', got '%s'", i, expected, headers[i].Name)
+		}
+	}
+}
+
+// ==================== STREAMING PARSE TESTS ====================
+
+func TestHTTP2ParseHeadersFromReader(t *testing.T) {
+	raw := "GET /streaming HTTP/2\r\nHost: example.com\r\nContent-Length: 11\r\n\r\nHello World"
+	reader := strings.NewReader(raw)
+
+	req, bodyReader, err := http2.ParseHeadersFromReader(reader)
+	if err != nil {
+		t.Fatalf("ParseHeadersFromReader failed: %v", err)
+	}
+
+	if req.Method != "GET" {
+		t.Errorf("Method not parsed: got '%s'", req.Method)
+	}
+
+	if req.Path != "/streaming" {
+		t.Errorf("Path not parsed: got '%s'", req.Path)
+	}
+
+	// Read body from returned reader
+	bodyBytes := make([]byte, 11)
+	n, err := bodyReader.Read(bodyBytes)
+	if err != nil && err.Error() != "EOF" {
+		t.Fatalf("Failed to read body: %v", err)
+	}
+
+	if n != 11 || string(bodyBytes) != "Hello World" {
+		t.Errorf("Body not readable from returned reader: got '%s'", string(bodyBytes[:n]))
+	}
+}
