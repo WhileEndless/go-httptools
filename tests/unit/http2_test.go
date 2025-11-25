@@ -1,6 +1,7 @@
 package unit
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -224,16 +225,41 @@ func TestHTTP2Request_Build(t *testing.T) {
 	built := req.Build()
 	builtStr := string(built)
 
-	if !strings.Contains(builtStr, ":method: GET") {
-		t.Error("Build should contain :method pseudo-header")
+	// Build() should now return HTTP/2 raw format
+	if !strings.HasPrefix(builtStr, "GET /api HTTP/2") {
+		t.Error("Build should start with request line: GET /api HTTP/2")
 	}
 
-	if !strings.Contains(builtStr, ":authority: example.com") {
-		t.Error("Build should contain :authority pseudo-header")
+	if !strings.Contains(builtStr, "Host: example.com") {
+		t.Error("Build should contain Host header from :authority")
 	}
 
 	if !strings.Contains(builtStr, "accept: */*") {
 		t.Error("Build should contain accept header")
+	}
+}
+
+func TestHTTP2Request_BuildPseudoHeaders(t *testing.T) {
+	req := http2.NewRequest()
+	req.Method = "GET"
+	req.Scheme = "https"
+	req.Authority = "example.com"
+	req.Path = "/api"
+	req.Headers.Add("accept", "*/*")
+
+	built := req.BuildPseudoHeaders()
+	builtStr := string(built)
+
+	if !strings.Contains(builtStr, ":method: GET") {
+		t.Error("BuildPseudoHeaders should contain :method pseudo-header")
+	}
+
+	if !strings.Contains(builtStr, ":authority: example.com") {
+		t.Error("BuildPseudoHeaders should contain :authority pseudo-header")
+	}
+
+	if !strings.Contains(builtStr, "accept: */*") {
+		t.Error("BuildPseudoHeaders should contain accept header")
 	}
 }
 
@@ -724,7 +750,7 @@ func TestHTTP2Parse_BuildHTTP1Style_PreservesVersion(t *testing.T) {
 	}
 }
 
-func TestHTTP2Parse_Build_PseudoHeaders(t *testing.T) {
+func TestHTTP2Parse_Build_RawFormat(t *testing.T) {
 	raw := []byte("GET /test HTTP/2\r\nHost: example.com\r\n\r\n")
 
 	req, err := http2.Parse(raw)
@@ -732,24 +758,45 @@ func TestHTTP2Parse_Build_PseudoHeaders(t *testing.T) {
 		t.Fatalf("Parse failed: %v", err)
 	}
 
-	// Build() should output pseudo-header format
+	// Build() should output HTTP/2 raw format
 	built := req.Build()
 	builtStr := string(built)
 
+	if !strings.HasPrefix(builtStr, "GET /test HTTP/2") {
+		t.Errorf("Build should start with request line, got: %s", builtStr[:30])
+	}
+
+	if !strings.Contains(builtStr, "Host: example.com") {
+		t.Error("Build should contain Host header")
+	}
+}
+
+func TestHTTP2Parse_BuildPseudoHeaders(t *testing.T) {
+	raw := []byte("GET /test HTTP/2\r\nHost: example.com\r\n\r\n")
+
+	req, err := http2.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// BuildPseudoHeaders() should output pseudo-header format
+	built := req.BuildPseudoHeaders()
+	builtStr := string(built)
+
 	if !strings.Contains(builtStr, ":method: GET") {
-		t.Error("Build should contain :method pseudo-header")
+		t.Error("BuildPseudoHeaders should contain :method pseudo-header")
 	}
 
 	if !strings.Contains(builtStr, ":path: /test") {
-		t.Error("Build should contain :path pseudo-header")
+		t.Error("BuildPseudoHeaders should contain :path pseudo-header")
 	}
 
 	if !strings.Contains(builtStr, ":authority: example.com") {
-		t.Error("Build should contain :authority pseudo-header")
+		t.Error("BuildPseudoHeaders should contain :authority pseudo-header")
 	}
 
 	if !strings.Contains(builtStr, ":scheme: https") {
-		t.Error("Build should contain :scheme pseudo-header")
+		t.Error("BuildPseudoHeaders should contain :scheme pseudo-header")
 	}
 }
 
@@ -947,5 +994,131 @@ func TestHTTP2ParseHeadersFromReader(t *testing.T) {
 
 	if n != 11 || string(bodyBytes) != "Hello World" {
 		t.Errorf("Body not readable from returned reader: got '%s'", string(bodyBytes[:n]))
+	}
+}
+
+// ==================== STREAMING BUILD TESTS ====================
+
+func TestHTTP2Request_WriteTo(t *testing.T) {
+	req := http2.NewRequest()
+	req.Method = "POST"
+	req.Scheme = "https"
+	req.Authority = "api.example.com"
+	req.Path = "/users"
+	req.Headers.Add("Content-Type", "application/json")
+	req.Body = []byte(`{"name":"test"}`)
+
+	var buf bytes.Buffer
+	n, err := req.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	result := buf.String()
+
+	if !strings.HasPrefix(result, "POST /users HTTP/2") {
+		t.Errorf("WriteTo should start with request line, got: %s", result[:30])
+	}
+
+	if !strings.Contains(result, "Host: api.example.com") {
+		t.Error("WriteTo should contain Host header")
+	}
+
+	if !strings.Contains(result, `{"name":"test"}`) {
+		t.Error("WriteTo should contain body")
+	}
+
+	if n != int64(len(result)) {
+		t.Errorf("WriteTo returned wrong byte count: expected %d, got %d", len(result), n)
+	}
+}
+
+func TestHTTP2Request_WriteToWithBody(t *testing.T) {
+	req := http2.NewRequest()
+	req.Method = "POST"
+	req.Authority = "api.example.com"
+	req.Path = "/upload"
+	req.Headers.Add("Content-Type", "application/octet-stream")
+
+	bodyContent := "This is a large body content for streaming"
+	bodyReader := strings.NewReader(bodyContent)
+
+	var buf bytes.Buffer
+	_, err := req.WriteToWithBody(&buf, bodyReader)
+	if err != nil {
+		t.Fatalf("WriteToWithBody failed: %v", err)
+	}
+
+	result := buf.String()
+
+	if !strings.HasPrefix(result, "POST /upload HTTP/2") {
+		t.Errorf("WriteToWithBody should start with request line, got: %s", result[:30])
+	}
+
+	if !strings.Contains(result, bodyContent) {
+		t.Error("WriteToWithBody should contain streamed body")
+	}
+}
+
+func TestHTTP2Response_WriteTo(t *testing.T) {
+	resp := http2.NewResponse()
+	resp.Status = 200
+	resp.Headers.Add("Content-Type", "application/json")
+	resp.Body = []byte(`{"status":"ok"}`)
+
+	var buf bytes.Buffer
+	_, err := resp.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	result := buf.String()
+
+	if !strings.HasPrefix(result, "HTTP/2 200 OK") {
+		t.Errorf("WriteTo should start with status line, got: %s", result[:20])
+	}
+
+	if !strings.Contains(result, `{"status":"ok"}`) {
+		t.Error("WriteTo should contain body")
+	}
+}
+
+func TestHTTP2Response_Build(t *testing.T) {
+	resp := http2.NewResponse()
+	resp.Status = 404
+	resp.Headers.Add("Content-Type", "text/html")
+	resp.Body = []byte("<h1>Not Found</h1>")
+
+	built := resp.Build()
+	builtStr := string(built)
+
+	// Build() should now return HTTP/2 raw format
+	if !strings.HasPrefix(builtStr, "HTTP/2 404 Not Found") {
+		t.Errorf("Build should start with status line, got: %s", builtStr[:30])
+	}
+
+	if !strings.Contains(builtStr, "Content-Type: text/html") {
+		t.Error("Build should contain Content-Type header")
+	}
+
+	if !strings.Contains(builtStr, "<h1>Not Found</h1>") {
+		t.Error("Build should contain body")
+	}
+}
+
+func TestHTTP2Response_BuildPseudoHeaders(t *testing.T) {
+	resp := http2.NewResponse()
+	resp.Status = 200
+	resp.Headers.Add("Content-Type", "application/json")
+
+	built := resp.BuildPseudoHeaders()
+	builtStr := string(built)
+
+	if !strings.Contains(builtStr, ":status: 200") {
+		t.Error("BuildPseudoHeaders should contain :status pseudo-header")
+	}
+
+	if !strings.Contains(builtStr, "Content-Type: application/json") {
+		t.Error("BuildPseudoHeaders should contain Content-Type header")
 	}
 }
