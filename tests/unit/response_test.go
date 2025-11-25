@@ -1231,3 +1231,505 @@ func TestResponseStreamingRoundTrip(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// StreamingBody Tests
+// ============================================================================
+
+func TestResponseWrapBodyReader_PlainBody(t *testing.T) {
+	// Create response without compression or chunking
+	resp := response.NewResponse()
+	resp.Headers.Set("Content-Type", "text/plain")
+
+	bodyData := []byte("Hello, World! This is a test body.")
+	bodyReader := bytes.NewReader(bodyData)
+
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Read all data
+	data, err := streamBody.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if !bytes.Equal(data, bodyData) {
+		t.Errorf("Body mismatch: expected %s, got %s", string(bodyData), string(data))
+	}
+}
+
+func TestResponseWrapBodyReader_GzipDecompression(t *testing.T) {
+	// Create gzip compressed body
+	originalBody := []byte("This is the original body content that will be compressed with gzip.")
+
+	var gzipBuf bytes.Buffer
+	gzipWriter := gzip.NewWriter(&gzipBuf)
+	if _, err := gzipWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress: %v", err)
+	}
+	gzipWriter.Close()
+
+	// Create response with gzip encoding
+	resp := response.NewResponse()
+	resp.Headers.Set("Content-Encoding", "gzip")
+
+	bodyReader := bytes.NewReader(gzipBuf.Bytes())
+
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Should report compressed
+	if !streamBody.IsCompressed() {
+		t.Error("Expected IsCompressed=true")
+	}
+
+	// Read all data - should be decompressed
+	data, err := streamBody.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if !bytes.Equal(data, originalBody) {
+		t.Errorf("Decompression failed: expected %s, got %s", string(originalBody), string(data))
+	}
+}
+
+func TestResponseWrapBodyReader_ChunkedDecoding(t *testing.T) {
+	// Create chunked body
+	chunkedBody := []byte("5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
+
+	// Create response with chunked encoding
+	resp := response.NewResponse()
+	resp.IsBodyChunked = true
+
+	bodyReader := bytes.NewReader(chunkedBody)
+
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Should report chunked
+	if !streamBody.IsChunked() {
+		t.Error("Expected IsChunked=true")
+	}
+
+	// Read all data - should be decoded
+	data, err := streamBody.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	expectedBody := "hello world"
+	if string(data) != expectedBody {
+		t.Errorf("Chunked decoding failed: expected '%s', got '%s'", expectedBody, string(data))
+	}
+}
+
+func TestResponseWrapBodyReader_ChunkedAndGzip(t *testing.T) {
+	// Create gzip compressed body first
+	originalBody := []byte("This body is both chunked and gzip compressed!")
+
+	var gzipBuf bytes.Buffer
+	gzipWriter := gzip.NewWriter(&gzipBuf)
+	if _, err := gzipWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress: %v", err)
+	}
+	gzipWriter.Close()
+
+	// Then encode as chunked
+	compressedData := gzipBuf.Bytes()
+	var chunkedBuf bytes.Buffer
+	chunkedBuf.WriteString(fmt.Sprintf("%x\r\n", len(compressedData)))
+	chunkedBuf.Write(compressedData)
+	chunkedBuf.WriteString("\r\n0\r\n\r\n")
+
+	// Create response with both encodings
+	resp := response.NewResponse()
+	resp.Headers.Set("Content-Encoding", "gzip")
+	resp.IsBodyChunked = true
+
+	bodyReader := bytes.NewReader(chunkedBuf.Bytes())
+
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Should report both
+	if !streamBody.IsChunked() {
+		t.Error("Expected IsChunked=true")
+	}
+	if !streamBody.IsCompressed() {
+		t.Error("Expected IsCompressed=true")
+	}
+
+	// Read all data - should be decoded and decompressed
+	data, err := streamBody.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if !bytes.Equal(data, originalBody) {
+		t.Errorf("Decoding failed: expected '%s', got '%s'", string(originalBody), string(data))
+	}
+}
+
+func TestResponseStreamingBody_Search(t *testing.T) {
+	// Create response with plain body
+	resp := response.NewResponse()
+	bodyData := []byte("The quick brown fox jumps over the lazy dog. The fox is fast.")
+
+	bodyReader := bytes.NewReader(bodyData)
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Search for pattern
+	offset, err := streamBody.SearchString("fox")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	expectedOffset := int64(16) // Position of first "fox"
+	if offset != expectedOffset {
+		t.Errorf("Search offset wrong: expected %d, got %d", expectedOffset, offset)
+	}
+}
+
+func TestResponseStreamingBody_SearchNotFound(t *testing.T) {
+	resp := response.NewResponse()
+	bodyData := []byte("Hello, World!")
+
+	bodyReader := bytes.NewReader(bodyData)
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Search for non-existent pattern
+	offset, err := streamBody.SearchString("xyz")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if offset != -1 {
+		t.Errorf("Expected -1 for not found, got %d", offset)
+	}
+}
+
+func TestResponseStreamingBody_Contains(t *testing.T) {
+	resp := response.NewResponse()
+	bodyData := []byte("Hello, World!")
+
+	bodyReader := bytes.NewReader(bodyData)
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	found, err := streamBody.ContainsString("World")
+	if err != nil {
+		t.Fatalf("Contains failed: %v", err)
+	}
+
+	if !found {
+		t.Error("Expected to find 'World' in body")
+	}
+}
+
+func TestResponseStreamingBody_WriteTo(t *testing.T) {
+	resp := response.NewResponse()
+	bodyData := []byte("Stream this content to a writer.")
+
+	bodyReader := bytes.NewReader(bodyData)
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	var buf bytes.Buffer
+	n, err := streamBody.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	if n != int64(len(bodyData)) {
+		t.Errorf("Bytes written mismatch: expected %d, got %d", len(bodyData), n)
+	}
+
+	if !bytes.Equal(buf.Bytes(), bodyData) {
+		t.Errorf("Content mismatch")
+	}
+}
+
+func TestResponseStreamingBody_TotalRead(t *testing.T) {
+	resp := response.NewResponse()
+	bodyData := []byte("Count these bytes as they are read.")
+
+	bodyReader := bytes.NewReader(bodyData)
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Read some data
+	buf := make([]byte, 10)
+	streamBody.Read(buf)
+
+	if streamBody.TotalRead() != 10 {
+		t.Errorf("TotalRead wrong: expected 10, got %d", streamBody.TotalRead())
+	}
+
+	// Read more
+	streamBody.Read(buf)
+
+	if streamBody.TotalRead() != 20 {
+		t.Errorf("TotalRead wrong: expected 20, got %d", streamBody.TotalRead())
+	}
+}
+
+// ============================================================================
+// WriteToWithBody Tests
+// ============================================================================
+
+func TestResponseWriteToWithBody_Basic(t *testing.T) {
+	resp := response.NewResponse()
+	resp.Version = "HTTP/1.1"
+	resp.StatusCode = 200
+	resp.StatusText = "OK"
+	resp.LineSeparator = "\r\n"
+	resp.Headers.Set("Content-Type", "text/plain")
+	resp.Headers.Set("Content-Length", "13")
+
+	bodyData := []byte("Hello, World!")
+	bodyReader := bytes.NewReader(bodyData)
+
+	var buf bytes.Buffer
+	n, err := resp.WriteToWithBody(&buf, bodyReader)
+	if err != nil {
+		t.Fatalf("WriteToWithBody failed: %v", err)
+	}
+
+	// Parse the result
+	parsed, err := response.Parse(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Failed to parse result: %v", err)
+	}
+
+	if parsed.StatusCode != 200 {
+		t.Errorf("Status code wrong")
+	}
+
+	if string(parsed.Body) != "Hello, World!" {
+		t.Errorf("Body wrong: got '%s'", string(parsed.Body))
+	}
+
+	if n <= int64(len(bodyData)) {
+		t.Errorf("Bytes written too small: %d", n)
+	}
+}
+
+func TestResponseWriteToWithBody_LargeBody(t *testing.T) {
+	resp := response.NewResponse()
+	resp.Version = "HTTP/1.1"
+	resp.StatusCode = 200
+	resp.StatusText = "OK"
+	resp.LineSeparator = "\r\n"
+	resp.Headers.Set("Content-Type", "application/octet-stream")
+
+	// Simulate large body (1MB)
+	bodyData := bytes.Repeat([]byte("X"), 1024*1024)
+	resp.Headers.Set("Content-Length", fmt.Sprintf("%d", len(bodyData)))
+
+	bodyReader := bytes.NewReader(bodyData)
+
+	var buf bytes.Buffer
+	_, err := resp.WriteToWithBody(&buf, bodyReader)
+	if err != nil {
+		t.Fatalf("WriteToWithBody failed: %v", err)
+	}
+
+	// Parse the result
+	parsed, err := response.Parse(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Failed to parse result: %v", err)
+	}
+
+	if len(parsed.Body) != len(bodyData) {
+		t.Errorf("Body size wrong: expected %d, got %d", len(bodyData), len(parsed.Body))
+	}
+}
+
+func TestResponseWriteToWithBodyChunked_Basic(t *testing.T) {
+	resp := response.NewResponse()
+	resp.Version = "HTTP/1.1"
+	resp.StatusCode = 200
+	resp.StatusText = "OK"
+	resp.LineSeparator = "\r\n"
+	resp.Headers.Set("Content-Type", "text/plain")
+
+	bodyData := []byte("This is chunked encoded body content.")
+	bodyReader := bytes.NewReader(bodyData)
+
+	var buf bytes.Buffer
+	_, err := resp.WriteToWithBodyChunked(&buf, bodyReader, 10) // Small chunk size for testing
+	if err != nil {
+		t.Fatalf("WriteToWithBodyChunked failed: %v", err)
+	}
+
+	// Parse the result with auto-decode
+	opts := response.ParseOptions{AutoDecodeChunked: true}
+	parsed, err := response.ParseWithOptions(buf.Bytes(), opts)
+	if err != nil {
+		t.Fatalf("Failed to parse result: %v", err)
+	}
+
+	if string(parsed.Body) != string(bodyData) {
+		t.Errorf("Body wrong: expected '%s', got '%s'", string(bodyData), string(parsed.Body))
+	}
+}
+
+func TestResponseWriteToWithBodyChunked_LargeBody(t *testing.T) {
+	resp := response.NewResponse()
+	resp.Version = "HTTP/1.1"
+	resp.StatusCode = 200
+	resp.StatusText = "OK"
+	resp.LineSeparator = "\r\n"
+	resp.Headers.Set("Content-Type", "application/octet-stream")
+
+	// Large body (100KB)
+	bodyData := bytes.Repeat([]byte("Y"), 100*1024)
+	bodyReader := bytes.NewReader(bodyData)
+
+	var buf bytes.Buffer
+	_, err := resp.WriteToWithBodyChunked(&buf, bodyReader, 8192) // Default chunk size
+	if err != nil {
+		t.Fatalf("WriteToWithBodyChunked failed: %v", err)
+	}
+
+	// Parse the result with auto-decode
+	opts := response.ParseOptions{AutoDecodeChunked: true}
+	parsed, err := response.ParseWithOptions(buf.Bytes(), opts)
+	if err != nil {
+		t.Fatalf("Failed to parse result: %v", err)
+	}
+
+	if len(parsed.Body) != len(bodyData) {
+		t.Errorf("Body size wrong: expected %d, got %d", len(bodyData), len(parsed.Body))
+	}
+
+	if !bytes.Equal(parsed.Body, bodyData) {
+		t.Errorf("Body content mismatch")
+	}
+}
+
+// ============================================================================
+// Full Streaming Pipeline Test
+// ============================================================================
+
+func TestResponseFullStreamingPipeline(t *testing.T) {
+	// Test the full pipeline: parse headers -> wrap body -> search -> stream out
+
+	// Create a gzip compressed response
+	originalBody := []byte("This is a test body with searchable content: MARKER_123 found here!")
+
+	var gzipBuf bytes.Buffer
+	gzipWriter := gzip.NewWriter(&gzipBuf)
+	gzipWriter.Write(originalBody)
+	gzipWriter.Close()
+
+	// Build full HTTP response
+	var rawResponse bytes.Buffer
+	rawResponse.WriteString("HTTP/1.1 200 OK\r\n")
+	rawResponse.WriteString("Content-Type: text/plain\r\n")
+	rawResponse.WriteString("Content-Encoding: gzip\r\n")
+	rawResponse.WriteString(fmt.Sprintf("Content-Length: %d\r\n", gzipBuf.Len()))
+	rawResponse.WriteString("\r\n")
+	rawResponse.Write(gzipBuf.Bytes())
+
+	// Step 1: Parse headers from reader
+	resp, bodyReader, err := response.ParseHeadersFromReader(bytes.NewReader(rawResponse.Bytes()))
+	if err != nil {
+		t.Fatalf("ParseHeadersFromReader failed: %v", err)
+	}
+
+	// Verify headers parsed correctly
+	if resp.StatusCode != 200 {
+		t.Errorf("Status code wrong: %d", resp.StatusCode)
+	}
+
+	if resp.GetContentEncoding() != "gzip" {
+		t.Errorf("Content-Encoding wrong: %s", resp.GetContentEncoding())
+	}
+
+	// Step 2: Wrap body reader for decompression
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Step 3: Search for marker in decompressed stream
+	offset, err := streamBody.SearchString("MARKER_123")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if offset < 0 {
+		t.Error("Marker not found in decompressed stream")
+	}
+}
+
+func TestResponseStreamingBody_BrotliDecompression(t *testing.T) {
+	// Create brotli compressed body
+	originalBody := []byte("This is the original body content that will be compressed with brotli.")
+
+	var brotliBuf bytes.Buffer
+	brotliWriter := brotli.NewWriter(&brotliBuf)
+	if _, err := brotliWriter.Write(originalBody); err != nil {
+		t.Fatalf("Failed to compress: %v", err)
+	}
+	brotliWriter.Close()
+
+	// Create response with brotli encoding
+	resp := response.NewResponse()
+	resp.Headers.Set("Content-Encoding", "br")
+
+	bodyReader := bytes.NewReader(brotliBuf.Bytes())
+
+	streamBody, err := resp.WrapBodyReader(bodyReader)
+	if err != nil {
+		t.Fatalf("WrapBodyReader failed: %v", err)
+	}
+	defer streamBody.Close()
+
+	// Should report compressed
+	if !streamBody.IsCompressed() {
+		t.Error("Expected IsCompressed=true")
+	}
+
+	// Read all data - should be decompressed
+	data, err := streamBody.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if !bytes.Equal(data, originalBody) {
+		t.Errorf("Brotli decompression failed: expected %s, got %s", string(originalBody), string(data))
+	}
+}
+

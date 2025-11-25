@@ -385,3 +385,263 @@ func compressZstdLevel(data []byte, level int) ([]byte, error) {
 
 	return encoder.EncodeAll(data, nil), nil
 }
+
+// ============================================================================
+// Streaming Decompression Support
+// ============================================================================
+
+// DecompressReader wraps an io.Reader to provide streaming decompression
+// Implements io.ReadCloser interface
+type DecompressReader struct {
+	reader     io.Reader
+	compType   CompressionType
+	underlying io.Closer
+}
+
+// NewDecompressReader creates a new streaming decompression reader
+// The returned reader decompresses data on-the-fly as it's read
+// Supports gzip, deflate, brotli, and zstd compression
+// Returns the original reader unchanged if compressionType is CompressionNone
+func NewDecompressReader(r io.Reader, compressionType CompressionType) (io.ReadCloser, error) {
+	if compressionType == CompressionNone {
+		// Return a no-op wrapper for uncompressed data
+		return &nopCloserReader{r}, nil
+	}
+
+	var reader io.Reader
+	var closer io.Closer
+
+	switch compressionType {
+	case CompressionGzip:
+		gr, err := gzip.NewReader(r)
+		if err != nil {
+			return nil, errors.NewError(errors.ErrorTypeCompressionError,
+				"failed to create gzip reader: "+err.Error(), "NewDecompressReader", nil)
+		}
+		reader = gr
+		closer = gr
+
+	case CompressionDeflate:
+		reader = flate.NewReader(r)
+		closer = reader.(io.Closer)
+
+	case CompressionBrotli:
+		reader = brotli.NewReader(r)
+		closer = nil // brotli.Reader doesn't need explicit close
+
+	case CompressionZstd:
+		zr, err := zstd.NewReader(r)
+		if err != nil {
+			return nil, errors.NewError(errors.ErrorTypeCompressionError,
+				"failed to create zstd reader: "+err.Error(), "NewDecompressReader", nil)
+		}
+		reader = zr
+		closer = &zstdCloser{zr}
+
+	default:
+		return nil, errors.NewError(errors.ErrorTypeCompressionError,
+			"unsupported compression type for streaming", "NewDecompressReader", nil)
+	}
+
+	return &DecompressReader{
+		reader:     reader,
+		compType:   compressionType,
+		underlying: closer,
+	}, nil
+}
+
+// NewDecompressReaderFromEncoding creates a streaming decompression reader from Content-Encoding header value
+func NewDecompressReaderFromEncoding(r io.Reader, contentEncoding string) (io.ReadCloser, error) {
+	compressionType := DetectCompression(contentEncoding)
+	return NewDecompressReader(r, compressionType)
+}
+
+// Read implements io.Reader interface
+func (d *DecompressReader) Read(p []byte) (int, error) {
+	return d.reader.Read(p)
+}
+
+// Close implements io.Closer interface
+func (d *DecompressReader) Close() error {
+	if d.underlying != nil {
+		return d.underlying.Close()
+	}
+	return nil
+}
+
+// CompressionType returns the compression type being used
+func (d *DecompressReader) CompressionType() CompressionType {
+	return d.compType
+}
+
+// nopCloserReader wraps an io.Reader to provide io.ReadCloser with no-op Close
+type nopCloserReader struct {
+	io.Reader
+}
+
+func (n *nopCloserReader) Close() error {
+	return nil
+}
+
+// zstdCloser wraps zstd.Decoder to implement io.Closer
+type zstdCloser struct {
+	*zstd.Decoder
+}
+
+func (z *zstdCloser) Close() error {
+	z.Decoder.Close()
+	return nil
+}
+
+// ============================================================================
+// Streaming Compression Support
+// ============================================================================
+
+// CompressWriter wraps an io.Writer to provide streaming compression
+// Implements io.WriteCloser interface
+type CompressWriter struct {
+	writer     io.Writer
+	compWriter io.WriteCloser
+	compType   CompressionType
+}
+
+// NewCompressWriter creates a new streaming compression writer
+// The returned writer compresses data on-the-fly as it's written
+// Supports gzip, deflate, brotli, and zstd compression
+// IMPORTANT: Always call Close() when done to flush and finalize compression
+func NewCompressWriter(w io.Writer, compressionType CompressionType) (io.WriteCloser, error) {
+	if compressionType == CompressionNone {
+		return &nopCloserWriter{w}, nil
+	}
+
+	var compWriter io.WriteCloser
+	var err error
+
+	switch compressionType {
+	case CompressionGzip:
+		compWriter = gzip.NewWriter(w)
+
+	case CompressionDeflate:
+		compWriter, err = flate.NewWriter(w, flate.DefaultCompression)
+		if err != nil {
+			return nil, errors.NewError(errors.ErrorTypeCompressionError,
+				"failed to create deflate writer: "+err.Error(), "NewCompressWriter", nil)
+		}
+
+	case CompressionBrotli:
+		compWriter = brotli.NewWriter(w)
+
+	case CompressionZstd:
+		encoder, err := zstd.NewWriter(w)
+		if err != nil {
+			return nil, errors.NewError(errors.ErrorTypeCompressionError,
+				"failed to create zstd writer: "+err.Error(), "NewCompressWriter", nil)
+		}
+		compWriter = encoder
+
+	default:
+		return nil, errors.NewError(errors.ErrorTypeCompressionError,
+			"unsupported compression type for streaming", "NewCompressWriter", nil)
+	}
+
+	return &CompressWriter{
+		writer:     w,
+		compWriter: compWriter,
+		compType:   compressionType,
+	}, nil
+}
+
+// NewCompressWriterFromEncoding creates a streaming compression writer from Content-Encoding header value
+func NewCompressWriterFromEncoding(w io.Writer, contentEncoding string) (io.WriteCloser, error) {
+	compressionType := DetectCompression(contentEncoding)
+	return NewCompressWriter(w, compressionType)
+}
+
+// NewCompressWriterLevel creates a streaming compression writer with a specific compression level
+func NewCompressWriterLevel(w io.Writer, compressionType CompressionType, level int) (io.WriteCloser, error) {
+	if compressionType == CompressionNone {
+		return &nopCloserWriter{w}, nil
+	}
+
+	var compWriter io.WriteCloser
+	var err error
+
+	switch compressionType {
+	case CompressionGzip:
+		compWriter, err = gzip.NewWriterLevel(w, level)
+		if err != nil {
+			return nil, errors.NewError(errors.ErrorTypeCompressionError,
+				"failed to create gzip writer: "+err.Error(), "NewCompressWriterLevel", nil)
+		}
+
+	case CompressionDeflate:
+		compWriter, err = flate.NewWriter(w, level)
+		if err != nil {
+			return nil, errors.NewError(errors.ErrorTypeCompressionError,
+				"failed to create deflate writer: "+err.Error(), "NewCompressWriterLevel", nil)
+		}
+
+	case CompressionBrotli:
+		compWriter = brotli.NewWriterLevel(w, level)
+
+	case CompressionZstd:
+		var encLevel zstd.EncoderLevel
+		switch {
+		case level <= 0:
+			encLevel = zstd.SpeedDefault
+		case level <= 3:
+			encLevel = zstd.SpeedFastest
+		case level <= 6:
+			encLevel = zstd.SpeedDefault
+		case level <= 12:
+			encLevel = zstd.SpeedBetterCompression
+		default:
+			encLevel = zstd.SpeedBestCompression
+		}
+		encoder, err := zstd.NewWriter(w, zstd.WithEncoderLevel(encLevel))
+		if err != nil {
+			return nil, errors.NewError(errors.ErrorTypeCompressionError,
+				"failed to create zstd writer: "+err.Error(), "NewCompressWriterLevel", nil)
+		}
+		compWriter = encoder
+
+	default:
+		return nil, errors.NewError(errors.ErrorTypeCompressionError,
+			"unsupported compression type for streaming", "NewCompressWriterLevel", nil)
+	}
+
+	return &CompressWriter{
+		writer:     w,
+		compWriter: compWriter,
+		compType:   compressionType,
+	}, nil
+}
+
+// Write implements io.Writer interface
+func (c *CompressWriter) Write(p []byte) (int, error) {
+	return c.compWriter.Write(p)
+}
+
+// Close implements io.Closer interface
+// MUST be called to finalize the compression stream
+func (c *CompressWriter) Close() error {
+	return c.compWriter.Close()
+}
+
+// CompressionType returns the compression type being used
+func (c *CompressWriter) CompressionType() CompressionType {
+	return c.compType
+}
+
+// nopCloserWriter wraps an io.Writer to provide io.WriteCloser with no-op Close
+type nopCloserWriter struct {
+	io.Writer
+}
+
+func (n *nopCloserWriter) Write(p []byte) (int, error) {
+	return n.Writer.Write(p)
+}
+
+func (n *nopCloserWriter) Close() error {
+	return nil
+}

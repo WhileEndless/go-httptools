@@ -357,11 +357,6 @@ func (r *Request) UpdateCookieHeader() {
 	r.Headers.Set("Cookie", cookieHeader)
 }
 
-// GetContentEncoding returns the Content-Encoding header value (trimmed)
-func (r *Request) GetContentEncoding() string {
-	return strings.TrimSpace(r.Headers.Get("Content-Encoding"))
-}
-
 // ============================================================================
 // Streaming Support (io.Writer)
 // ============================================================================
@@ -440,4 +435,290 @@ func (r *Request) WriteBodyTo(w io.Writer) (int64, error) {
 // Returns the number of bytes copied and any error encountered
 func (r *Request) CopyBodyFrom(src io.Reader, dst io.Writer) (int64, error) {
 	return io.Copy(dst, src)
+}
+
+// WriteToWithBody writes the request headers followed by body from an external reader
+// This is useful for building large requests without loading body into memory
+// The body is streamed directly from src to dst
+// Returns the total number of bytes written and any error encountered
+func (r *Request) WriteToWithBody(dst io.Writer, bodyReader io.Reader) (int64, error) {
+	var total int64
+
+	// Write headers first
+	n, err := r.WriteHeadersTo(dst)
+	total += n
+	if err != nil {
+		return total, err
+	}
+
+	// Stream body from reader
+	if bodyReader != nil {
+		copied, err := io.Copy(dst, bodyReader)
+		total += copied
+		if err != nil {
+			return total, err
+		}
+	}
+
+	return total, nil
+}
+
+// WriteToWithBodyChunked writes the request with chunked transfer encoding
+// Body is read from bodyReader and written as chunked transfer encoding
+// chunkSize specifies the size of each chunk (0 = default 8192)
+func (r *Request) WriteToWithBodyChunked(dst io.Writer, bodyReader io.Reader, chunkSize int) (int64, error) {
+	var total int64
+
+	// Clone request and set chunked encoding
+	clone := r.Clone()
+	clone.Headers.Set("Transfer-Encoding", "chunked")
+	clone.Headers.Del("Content-Length")
+
+	// Write headers
+	n, err := clone.WriteHeadersTo(dst)
+	total += n
+	if err != nil {
+		return total, err
+	}
+
+	// Write body with chunked encoding
+	chunkedWriter := chunked.NewEncodeWriter(dst, chunkSize)
+
+	// Use a buffer to copy
+	buf := make([]byte, 32*1024) // 32KB buffer
+	for {
+		nr, readErr := bodyReader.Read(buf)
+		if nr > 0 {
+			nw, writeErr := chunkedWriter.Write(buf[:nr])
+			total += int64(nw)
+			if writeErr != nil {
+				return total, writeErr
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return total, readErr
+		}
+	}
+
+	// Close chunked writer to write final chunk
+	if err := chunkedWriter.Close(); err != nil {
+		return total, err
+	}
+
+	return total, nil
+}
+
+// ============================================================================
+// Streaming Body Reader
+// ============================================================================
+
+// StreamingBody provides streaming access to HTTP request body
+// Supports automatic decompression and chunked decoding
+// Also provides body operations like Search
+type StreamingBody struct {
+	reader       io.Reader
+	closeFunc    func() error
+	isChunked    bool
+	isCompressed bool
+	compType     compression.CompressionType
+	totalRead    int64
+}
+
+// WrapBodyReader wraps a body reader with automatic decompression and/or chunked decoding
+// based on the request headers
+//
+// If isChunked is true, wraps with chunked decoder
+// If contentEncoding is set, wraps with appropriate decompressor
+// Order: raw -> chunked decode -> decompress (matches HTTP specification)
+//
+// The returned StreamingBody must be closed when done
+func (r *Request) WrapBodyReader(bodyReader io.Reader) (*StreamingBody, error) {
+	var reader io.Reader = bodyReader
+	var closers []func() error
+
+	// First: decode chunked if needed (chunked is outermost encoding)
+	if r.IsBodyChunked {
+		reader = chunked.NewDecodeReader(reader)
+	}
+
+	// Second: decompress if needed
+	contentEncoding := r.GetContentEncoding()
+	compType := compression.DetectCompression(contentEncoding)
+	if compType != compression.CompressionNone {
+		decompReader, err := compression.NewDecompressReader(reader, compType)
+		if err != nil {
+			// Close any previously opened closers
+			for _, closer := range closers {
+				closer()
+			}
+			return nil, err
+		}
+		reader = decompReader
+		closers = append(closers, decompReader.Close)
+	}
+
+	closeFunc := func() error {
+		var lastErr error
+		for i := len(closers) - 1; i >= 0; i-- {
+			if err := closers[i](); err != nil {
+				lastErr = err
+			}
+		}
+		return lastErr
+	}
+
+	return &StreamingBody{
+		reader:       reader,
+		closeFunc:    closeFunc,
+		isChunked:    r.IsBodyChunked,
+		isCompressed: compType != compression.CompressionNone,
+		compType:     compType,
+	}, nil
+}
+
+// Read implements io.Reader interface
+func (s *StreamingBody) Read(p []byte) (int, error) {
+	n, err := s.reader.Read(p)
+	s.totalRead += int64(n)
+	return n, err
+}
+
+// Close closes the streaming body and releases any resources
+func (s *StreamingBody) Close() error {
+	if s.closeFunc != nil {
+		return s.closeFunc()
+	}
+	return nil
+}
+
+// TotalRead returns the total number of bytes read so far
+func (s *StreamingBody) TotalRead() int64 {
+	return s.totalRead
+}
+
+// IsChunked returns true if the body was chunked encoded
+func (s *StreamingBody) IsChunked() bool {
+	return s.isChunked
+}
+
+// IsCompressed returns true if the body was compressed
+func (s *StreamingBody) IsCompressed() bool {
+	return s.isCompressed
+}
+
+// CompressionType returns the compression type used
+func (s *StreamingBody) CompressionType() compression.CompressionType {
+	return s.compType
+}
+
+// WriteTo implements io.WriterTo interface
+// Writes all remaining body data to the writer
+func (s *StreamingBody) WriteTo(w io.Writer) (int64, error) {
+	return io.Copy(w, s.reader)
+}
+
+// ReadAll reads all remaining body data into memory
+// Use with caution for large bodies
+func (s *StreamingBody) ReadAll() ([]byte, error) {
+	return io.ReadAll(s.reader)
+}
+
+// Search searches for a pattern in the streaming body
+// Returns the offset of the first match, or -1 if not found
+// WARNING: This reads through the body and cannot be undone
+// The body reader will be at EOF after this call
+func (s *StreamingBody) Search(pattern []byte) (int64, error) {
+	if len(pattern) == 0 {
+		return -1, nil
+	}
+
+	// Use a sliding window approach for memory efficiency
+	bufSize := 64 * 1024 // 64KB buffer
+	if len(pattern) > bufSize/2 {
+		bufSize = len(pattern) * 4
+	}
+
+	buf := make([]byte, bufSize)
+	overlap := len(pattern) - 1
+	offset := int64(0)
+	buffered := 0
+
+	for {
+		// Read more data
+		n, err := s.reader.Read(buf[buffered:])
+		if n > 0 {
+			buffered += n
+
+			// Search in current buffer
+			idx := searchBytes(buf[:buffered], pattern)
+			if idx >= 0 {
+				return offset + int64(idx), nil
+			}
+
+			// Keep overlap for next iteration
+			if buffered > overlap {
+				keep := overlap
+				copy(buf, buf[buffered-keep:buffered])
+				offset += int64(buffered - keep)
+				buffered = keep
+			}
+		}
+
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return -1, err
+		}
+	}
+
+	return -1, nil
+}
+
+// SearchString searches for a string pattern in the streaming body
+func (s *StreamingBody) SearchString(pattern string) (int64, error) {
+	return s.Search([]byte(pattern))
+}
+
+// Contains checks if the pattern exists in the streaming body
+// WARNING: This reads through the body and cannot be undone
+func (s *StreamingBody) Contains(pattern []byte) (bool, error) {
+	offset, err := s.Search(pattern)
+	return offset >= 0, err
+}
+
+// ContainsString checks if the string exists in the streaming body
+func (s *StreamingBody) ContainsString(pattern string) (bool, error) {
+	return s.Contains([]byte(pattern))
+}
+
+// CopyTo copies all remaining body data to the writer
+// This is an alias for WriteTo for clearer semantics
+func (s *StreamingBody) CopyTo(w io.Writer) (int64, error) {
+	return s.WriteTo(w)
+}
+
+// searchBytes searches for pattern in data using a simple algorithm
+// Returns the index of the first match, or -1 if not found
+func searchBytes(data, pattern []byte) int {
+	if len(pattern) == 0 || len(data) < len(pattern) {
+		return -1
+	}
+
+	for i := 0; i <= len(data)-len(pattern); i++ {
+		found := true
+		for j := 0; j < len(pattern); j++ {
+			if data[i+j] != pattern[j] {
+				found = false
+				break
+			}
+		}
+		if found {
+			return i
+		}
+	}
+	return -1
 }

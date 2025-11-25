@@ -1,8 +1,10 @@
 package chunked
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -230,4 +232,242 @@ func IsChunked(data []byte) bool {
 	// Try to parse as hex
 	_, err := strconv.ParseInt(firstLine, 16, 64)
 	return err == nil
+}
+
+// ============================================================================
+// Streaming Chunked Decoder
+// ============================================================================
+
+// DecodeReader provides streaming chunked transfer decoding
+// Implements io.Reader interface to decode chunked data on-the-fly
+type DecodeReader struct {
+	reader       *bufio.Reader
+	remaining    int64  // remaining bytes in current chunk
+	eof          bool   // reached final 0-length chunk
+	trailers     map[string]string
+	trailersRead bool
+}
+
+// NewDecodeReader creates a new streaming chunked decoder reader
+// The returned reader decodes chunked transfer encoding on-the-fly as it's read
+func NewDecodeReader(r io.Reader) *DecodeReader {
+	var br *bufio.Reader
+	if b, ok := r.(*bufio.Reader); ok {
+		br = b
+	} else {
+		br = bufio.NewReader(r)
+	}
+
+	return &DecodeReader{
+		reader:   br,
+		trailers: make(map[string]string),
+	}
+}
+
+// Read implements io.Reader interface
+// Decodes chunked transfer encoding and returns raw body data
+func (d *DecodeReader) Read(p []byte) (int, error) {
+	if d.eof {
+		return 0, io.EOF
+	}
+
+	// If we have remaining data in the current chunk, read it
+	if d.remaining > 0 {
+		toRead := int64(len(p))
+		if toRead > d.remaining {
+			toRead = d.remaining
+		}
+		n, err := d.reader.Read(p[:toRead])
+		d.remaining -= int64(n)
+
+		// If we finished the chunk, read the trailing CRLF
+		if d.remaining == 0 {
+			d.readChunkTerminator()
+		}
+
+		if err != nil && err != io.EOF {
+			return n, err
+		}
+		return n, nil
+	}
+
+	// Read next chunk size
+	sizeLine, err := d.reader.ReadString('\n')
+	if err != nil {
+		if err == io.EOF {
+			d.eof = true
+		}
+		return 0, err
+	}
+
+	// Parse chunk size (strip CRLF and any extensions)
+	sizeLine = strings.TrimRight(sizeLine, "\r\n")
+	if idx := strings.Index(sizeLine, ";"); idx != -1 {
+		sizeLine = sizeLine[:idx]
+	}
+	sizeLine = strings.TrimSpace(sizeLine)
+
+	chunkSize, err := strconv.ParseInt(sizeLine, 16, 64)
+	if err != nil {
+		// Invalid chunk size - might be end or corrupted
+		d.eof = true
+		return 0, io.EOF
+	}
+
+	// Zero-length chunk signals end of body
+	if chunkSize == 0 {
+		d.eof = true
+		d.readTrailers()
+		return 0, io.EOF
+	}
+
+	d.remaining = chunkSize
+
+	// Now read from the chunk
+	return d.Read(p)
+}
+
+// readChunkTerminator reads and discards the CRLF after chunk data
+func (d *DecodeReader) readChunkTerminator() {
+	// Read until \n (which handles both \r\n and \n)
+	d.reader.ReadString('\n')
+}
+
+// readTrailers reads optional trailers after the final chunk
+func (d *DecodeReader) readTrailers() {
+	if d.trailersRead {
+		return
+	}
+	d.trailersRead = true
+
+	for {
+		line, err := d.reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			// Empty line signals end of trailers
+			return
+		}
+
+		// Parse "Name: Value"
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			name := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			d.trailers[name] = value
+		}
+	}
+}
+
+// Trailers returns any trailers found after the final chunk
+// Only valid after Read returns io.EOF
+func (d *DecodeReader) Trailers() map[string]string {
+	return d.trailers
+}
+
+// ============================================================================
+// Streaming Chunked Encoder
+// ============================================================================
+
+// EncodeWriter provides streaming chunked transfer encoding
+// Implements io.WriteCloser interface to encode data as chunked on-the-fly
+type EncodeWriter struct {
+	writer    io.Writer
+	chunkSize int
+	closed    bool
+	trailers  map[string]string
+}
+
+// NewEncodeWriter creates a new streaming chunked encoder writer
+// chunkSize specifies the maximum size of each chunk (0 = default 8192)
+// The returned writer encodes data with chunked transfer encoding as it's written
+// IMPORTANT: Always call Close() when done to write the final zero-length chunk
+func NewEncodeWriter(w io.Writer, chunkSize int) *EncodeWriter {
+	if chunkSize <= 0 {
+		chunkSize = 8192
+	}
+	return &EncodeWriter{
+		writer:    w,
+		chunkSize: chunkSize,
+		trailers:  make(map[string]string),
+	}
+}
+
+// SetTrailer sets a trailer to be written after the final chunk
+// Must be called before Close()
+func (e *EncodeWriter) SetTrailer(name, value string) {
+	e.trailers[name] = value
+}
+
+// Write implements io.Writer interface
+// Writes data as one or more chunks
+func (e *EncodeWriter) Write(p []byte) (int, error) {
+	if e.closed {
+		return 0, io.ErrClosedPipe
+	}
+
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	totalWritten := 0
+	for len(p) > 0 {
+		// Determine chunk size for this iteration
+		chunkLen := len(p)
+		if chunkLen > e.chunkSize {
+			chunkLen = e.chunkSize
+		}
+
+		// Write chunk size in hex
+		sizeStr := fmt.Sprintf("%x\r\n", chunkLen)
+		if _, err := e.writer.Write([]byte(sizeStr)); err != nil {
+			return totalWritten, err
+		}
+
+		// Write chunk data
+		n, err := e.writer.Write(p[:chunkLen])
+		totalWritten += n
+		if err != nil {
+			return totalWritten, err
+		}
+
+		// Write chunk terminator
+		if _, err := e.writer.Write([]byte("\r\n")); err != nil {
+			return totalWritten, err
+		}
+
+		p = p[chunkLen:]
+	}
+
+	return totalWritten, nil
+}
+
+// Close implements io.Closer interface
+// Writes the final zero-length chunk and any trailers
+// MUST be called to complete the chunked encoding
+func (e *EncodeWriter) Close() error {
+	if e.closed {
+		return nil
+	}
+	e.closed = true
+
+	// Write final chunk (size 0)
+	if _, err := e.writer.Write([]byte("0\r\n")); err != nil {
+		return err
+	}
+
+	// Write trailers if any
+	for name, value := range e.trailers {
+		trailer := fmt.Sprintf("%s: %s\r\n", name, value)
+		if _, err := e.writer.Write([]byte(trailer)); err != nil {
+			return err
+		}
+	}
+
+	// Write final CRLF
+	_, err := e.writer.Write([]byte("\r\n"))
+	return err
 }
